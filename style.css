@@ -180,6 +180,7 @@ button:hover:not(:disabled) {
   transform: translateY(-1px);
 }
 button:focus-visible,
+select:focus-visible,
 input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
@@ -201,6 +202,7 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   border-top: 1px solid var(--line);
   padding: 19px 0;
   color: var(--muted);
@@ -216,6 +218,24 @@ input[type="range"] {
   accent-color: var(--accent);
   width: 64px;
   height: 3px;
+}
+.sound select {
+  appearance: none;
+  min-height: 28px;
+  padding: 4px 22px 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff08
+    url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" fill="none" stroke="%239aafa2" stroke-width="1.4" stroke-linecap="round"/></svg>')
+    no-repeat right 8px center;
+  background-size: 9px 6px;
+  color: var(--text);
+  font:
+    500 11px "DM Sans",
+    system-ui,
+    sans-serif;
+  cursor: pointer;
+  touch-action: manipulation;
 }
 .loop-note {
   font-size: 11px;

@@ -154,3 +154,33 @@ test("worker upgrades preserve caches belonging to other app scopes", async ({
   expect(names).toContain("still-pwa-sibling-release");
   expect(names.some((name) => name.endsWith("-old"))).toBe(false);
 });
+
+test("lo-fi track choice switches live and is remembered", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await expect(page.locator("#track")).toHaveValue("still");
+  await expect(page.locator("#sound-label")).toContainText("Still");
+  expect(await page.locator("#track option").count()).toBeGreaterThan(1);
+
+  await page.locator("#start").click();
+  await expect.poll(() => page.evaluate(() => window.activeSounds)).toBe(1);
+  const rendered = await page.evaluate(() => window.audioAttempts);
+
+  await page.locator("#track").selectOption("dusk");
+  await expect(page.locator("#sound-label")).toContainText("Dusk · playing");
+  // The old loop is stopped as the new one starts, so one voice stays audible.
+  await expect.poll(() => page.evaluate(() => window.activeSounds)).toBe(1);
+  expect(await page.evaluate(() => window.audioAttempts)).toBe(rendered + 1);
+
+  await page.reload();
+  await expect(page.locator("#track")).toHaveValue("dusk");
+  await expect(page.locator("#sound-label")).toContainText("Dusk");
+
+  await page.evaluate(() =>
+    localStorage.setItem("still.track.v1", "no-such-track"),
+  );
+  await page.reload();
+  await expect(page.locator("#track")).toHaveValue("still");
+  expect(errors).toEqual([]);
+});

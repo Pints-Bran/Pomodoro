@@ -1,4 +1,4 @@
-import { makeMusic } from "./audio.js";
+import { DEFAULT_TRACK, findTrack, makeMusic, TRACKS } from "./audio.js";
 import { getElement } from "./dom.js";
 
 type Phase = "work" | "break";
@@ -31,6 +31,7 @@ const elements = {
   stop: getElement("stop", HTMLButtonElement),
   clear: getElement("clear", HTMLButtonElement),
   volume: getElement("volume", HTMLInputElement),
+  track: getElement("track", HTMLSelectElement),
   progress: getElement("progress", SVGCircleElement),
   "storage-message": getElement("storage-message", HTMLElement),
   announcement: getElement("announcement", HTMLElement),
@@ -49,7 +50,8 @@ const $ = <K extends keyof typeof elements>(id: K): (typeof elements)[K] =>
   elements[id];
 const WORK = 25 * 60,
   BREAK = 5 * 60,
-  KEY = "still.sessions.v1";
+  KEY = "still.sessions.v1",
+  TRACK_KEY = "still.track.v1";
 let phase: Phase = "work";
 let state: TimerState = "idle";
 let remaining = WORK,
@@ -57,7 +59,11 @@ let remaining = WORK,
   round = 1;
 let startedAt: number | null = null;
 let sessions: FocusSession[] = [];
+let trackId = DEFAULT_TRACK.id;
 try {
+  // Read the track first: a corrupt session list must not cost the preference.
+  const storedTrack = localStorage.getItem(TRACK_KEY);
+  if (storedTrack) trackId = findTrack(storedTrack).id;
   const saved: unknown = JSON.parse(localStorage.getItem(KEY) || "[]");
   if (Array.isArray(saved)) sessions = saved.filter(isFocusSession);
 } catch {
@@ -66,8 +72,10 @@ try {
 }
 let context: AudioContext | undefined;
 let gain: GainNode | undefined;
-let source: AudioBufferSourceNode | null = null;
-let musicBuffer: AudioBuffer | undefined;
+/** The playing loop, with its own gain so tracks can be swapped without a click. */
+let voice: { node: AudioBufferSourceNode; fade: GainNode } | null = null;
+/** Rendering a loop is not free, so keep each one for as long as the context lives. */
+const buffers = new Map<string, AudioBuffer>();
 let audioFailed = false;
 const AUDIO_ERROR_MESSAGE =
   "Audio could not start. The timer still works. Pause and resume to try again.";
@@ -76,10 +84,11 @@ function reportAudioFailure(): void {
   $("storage-message").textContent = AUDIO_ERROR_MESSAGE;
 }
 function silence() {
-  if (source) {
-    source.stop();
-    source.disconnect();
-    source = null;
+  if (voice) {
+    voice.node.stop();
+    voice.node.disconnect();
+    voice.fade.disconnect();
+    voice = null;
   }
 }
 function playMusic() {
@@ -88,23 +97,58 @@ function playMusic() {
     phase !== "work" ||
     !context ||
     !gain ||
-    !musicBuffer ||
     audioFailed ||
-    source
+    voice
   )
     return;
-  let candidate: AudioBufferSourceNode | undefined;
+  let fade: GainNode | undefined;
+  let node: AudioBufferSourceNode | undefined;
   try {
-    candidate = context.createBufferSource();
-    candidate.buffer = musicBuffer;
-    candidate.loop = true;
-    candidate.connect(gain);
-    candidate.start();
-    source = candidate;
+    let buffer = buffers.get(trackId);
+    if (!buffer) {
+      buffer = makeMusic(context, findTrack(trackId));
+      buffers.set(trackId, buffer);
+    }
+    fade = context.createGain();
+    fade.gain.value = 0;
+    fade.gain.setTargetAtTime(1, context.currentTime, 0.08);
+    fade.connect(gain);
+    node = context.createBufferSource();
+    node.buffer = buffer;
+    node.loop = true;
+    node.connect(fade);
+    node.start();
+    voice = { node, fade };
   } catch {
-    candidate?.disconnect();
+    node?.disconnect();
+    fade?.disconnect();
     reportAudioFailure();
   }
+}
+function selectTrack(id: string): void {
+  const chosen = findTrack(id);
+  if (chosen.id === trackId) return;
+  trackId = chosen.id;
+  $("track").value = trackId;
+  try {
+    localStorage.setItem(TRACK_KEY, trackId);
+  } catch {
+    // A track that cannot be remembered still plays for this session.
+  }
+  if (voice && context) {
+    // Fade the old loop out under the new one rather than cutting mid-phrase.
+    const previous = voice;
+    voice = null;
+    previous.fade.gain.setTargetAtTime(0, context.currentTime, 0.06);
+    previous.node.stop(context.currentTime + 0.4);
+    previous.node.onended = () => {
+      previous.node.disconnect();
+      previous.fade.disconnect();
+    };
+  }
+  playMusic();
+  $("announcement").textContent = `Music set to ${chosen.name}.`;
+  render();
 }
 function record(end: number, complete: boolean, seconds = WORK): void {
   sessions.unshift({
@@ -176,14 +220,15 @@ function render() {
   $("start-label").textContent = state === "paused" ? "Resume" : "Start focus";
   $("pause").disabled = state !== "running";
   $("stop").disabled = state === "idle";
+  const track = findTrack(trackId);
   $("sound-label").textContent =
     phase === "break"
       ? "♫   Break time · music is silent"
       : state === "running"
         ? audioFailed
           ? "♫   Audio unavailable · timer running"
-          : "♫   Original lo-fi · playing"
-        : "♫   Original lo-fi · ready when you are";
+          : `♫   ${track.name} · playing`
+        : `♫   ${track.name} · ${track.mood}`;
   document.body.classList.toggle("break", phase === "break");
 }
 $("start").addEventListener("click", () => {
@@ -201,7 +246,7 @@ $("start").addEventListener("click", () => {
       if (!AudioContextClass) throw new Error("Web Audio is unavailable.");
       context = new AudioContextClass();
       gain = undefined;
-      musicBuffer = undefined;
+      buffers.clear();
     }
     if (!gain) {
       const newGain = context.createGain();
@@ -209,7 +254,6 @@ $("start").addEventListener("click", () => {
       newGain.connect(context.destination);
       gain = newGain;
     }
-    if (!musicBuffer) musicBuffer = makeMusic(context);
     void context.resume().catch(() => {
       silence();
       reportAudioFailure();
@@ -243,6 +287,18 @@ $("stop").addEventListener("click", () => {
   startedAt = null;
   silence();
   render();
+});
+$("track").replaceChildren(
+  ...TRACKS.map((choice) =>
+    Object.assign(document.createElement("option"), {
+      value: choice.id,
+      textContent: choice.name,
+    }),
+  ),
+);
+$("track").value = trackId;
+$("track").addEventListener("change", () => {
+  selectTrack($("track").value);
 });
 $("volume").addEventListener("input", () => {
   if (gain && context)
