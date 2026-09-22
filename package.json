@@ -1,0 +1,25 @@
+{
+  "name": "still-pomodoro",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.tools.json",
+    "build": "npm run typecheck && node scripts/build.ts",
+    "format": "biome format --write .",
+    "start": "npm run build && python3 -m http.server 8080 --directory dist",
+    "test": "npm run build && playwright test",
+    "check": "npm run typecheck && npm run lint",
+    "lint": "biome check . --error-on-warnings",
+    "lint:fix": "biome check --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2"
+  },
+  "type": "module"
+}
