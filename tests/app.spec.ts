@@ -12,7 +12,12 @@ declare global {
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     const originalNow = Date.now;
-    window.timeOffset = 0;
+    // Keep the fake clock across reloads: the app is meant to survive them.
+    Object.defineProperty(window, "timeOffset", {
+      get: () => Number(sessionStorage.getItem("test.timeOffset") ?? 0),
+      set: (value: number) =>
+        sessionStorage.setItem("test.timeOffset", String(value)),
+    });
     Date.now = () => originalNow() + window.timeOffset;
     window.activeSounds = 0;
     window.audioAttempts = 0;
@@ -60,7 +65,7 @@ test("work, silent break, resume, pause, stop, and offline history", async ({
   await page.evaluate(() => {
     window.timeOffset += 5 * 60 * 1000;
   });
-  await expect(page.locator("#cycle")).toHaveText("ROUND 02");
+  await expect(page.locator("#cycle")).toHaveText("SESSION 02");
   expect(await page.evaluate(() => window.activeSounds)).toBe(1);
   await page.locator("#pause").click();
   const paused = await page.locator("#timer").textContent();
@@ -182,5 +187,133 @@ test("lo-fi track choice switches live and is remembered", async ({ page }) => {
   );
   await page.reload();
   await expect(page.locator("#track")).toHaveValue("still");
+  expect(errors).toEqual([]);
+});
+
+test("skip ends the phase early and still counts the session", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await expect(page.locator("#skip")).toBeDisabled();
+  await page.locator("#start").click();
+  await expect.poll(() => page.evaluate(() => window.activeSounds)).toBe(1);
+  await page.evaluate(() => {
+    window.timeOffset += 60000;
+  });
+  await expect(page.locator("#timer")).toHaveText(/^2[34]:/);
+
+  await page.locator("#skip").click();
+  await expect(page.locator("body")).toHaveClass("break");
+  await expect(page.locator("#timer")).toHaveText(/^0[45]:/);
+  expect(await page.evaluate(() => window.activeSounds)).toBe(0);
+  await expect(page.locator(".session")).toHaveCount(1);
+  await expect(page.locator(".session").first()).toContainText("Focus skipped");
+  // A minute of work is a minute of work, but it is not a finished pomodoro.
+  await expect(page.locator("#total-count")).toHaveText("0");
+  await expect(page.locator("#today-minutes")).toHaveText("1 min");
+
+  await page.locator("#skip").click();
+  await expect(page.locator("#cycle")).toHaveText("SESSION 02");
+  await expect(page.locator("#timer")).toHaveText(/^2[45]:/);
+  await expect(page.locator("body")).not.toHaveClass("break");
+  await expect.poll(() => page.evaluate(() => window.activeSounds)).toBe(1);
+  await expect(page.locator(".session")).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test("a running timer keeps counting through a reload", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await page.locator("#start").click();
+  await expect.poll(() => page.evaluate(() => window.activeSounds)).toBe(1);
+  await page.evaluate(() => {
+    window.timeOffset += 10 * 60 * 1000;
+  });
+  await expect(page.locator("#timer")).toHaveText(/^1[45]:/);
+
+  await page.reload();
+  await expect(page.locator("#timer")).toHaveText(/^1[45]:/);
+  await expect(page.locator("#cycle")).toHaveText("SESSION 01");
+  await expect(page.locator("#pause")).toBeEnabled();
+  await expect(page.locator("#start")).toBeDisabled();
+  // Autoplay rules hold the music until the page gets a real gesture.
+  expect(await page.evaluate(() => window.activeSounds)).toBe(0);
+  await expect(page.locator("#sound-label")).toContainText(
+    "bring the music back",
+  );
+  await page.locator("footer").click();
+  await expect.poll(() => page.evaluate(() => window.activeSounds)).toBe(1);
+  await expect(page.locator("#sound-label")).toContainText("playing");
+
+  // The phase boundary the restored deadline carries still lands on time.
+  await page.evaluate(() => {
+    window.timeOffset += 15 * 60 * 1000;
+  });
+  await expect(page.locator("body")).toHaveClass("break");
+  await expect(page.locator("#total-count")).toHaveText("1");
+  expect(errors).toEqual([]);
+});
+
+test("a paused timer reloads paused, not restarted", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#start").click();
+  await page.evaluate(() => {
+    window.timeOffset += 5 * 60 * 1000;
+  });
+  await page.locator("#pause").click();
+  const paused = await page.locator("#timer").textContent();
+  expect(paused).toMatch(/^(19|20):/);
+
+  await page.reload();
+  await expect(page.locator("#timer")).toHaveText(paused ?? "");
+  await expect(page.locator("#start-label")).toHaveText("Resume");
+  await page.evaluate(() => {
+    window.timeOffset += 10 * 60 * 1000;
+  });
+  await page.waitForTimeout(350);
+  await expect(page.locator("#timer")).toHaveText(paused ?? "");
+  expect(await page.evaluate(() => window.activeSounds)).toBe(0);
+});
+
+test("a timer left running for hours starts a fresh sitting", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(() =>
+    localStorage.setItem(
+      "still.timer.v1",
+      JSON.stringify({
+        phase: "break",
+        state: "running",
+        deadline: Date.now() - 3 * 60 * 60 * 1000,
+        remaining: 0,
+        round: 6,
+        startedAt: Date.now() - 4 * 60 * 60 * 1000,
+      }),
+    ),
+  );
+  await page.reload();
+  await expect(page.locator("#timer")).toHaveText("25:00");
+  await expect(page.locator("#cycle")).toHaveText("SESSION 01");
+  await expect(page.locator("#stop")).toBeDisabled();
+  await expect(page.locator(".session")).toHaveCount(0);
+  expect(
+    await page.evaluate(() => localStorage.getItem("still.timer.v1")),
+  ).toBe(null);
+});
+
+test("a malformed timer snapshot is ignored", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await page.evaluate(() =>
+    localStorage.setItem("still.timer.v1", '{"phase":"nap","state":"zoom"'),
+  );
+  await page.reload();
+  await expect(page.locator("#timer")).toHaveText("25:00");
+  await expect(page.locator("#cycle")).toHaveText("SESSION 01");
   expect(errors).toEqual([]);
 });

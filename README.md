@@ -18,7 +18,7 @@ Open `http://localhost:8080`. After editing source files, restart the command to
 - `npm run format` formats supported source and configuration files with Biome.
 - `npm run lint` runs Biome alone; `npm run lint:fix` applies its safe fixes.
 - `npm run check` checks TypeScript types plus Biome lint, import ordering, and formatting (warnings fail the check).
-- `npm test` builds and runs browser regression tests for work/break transitions, offline audio and history, audio failure recovery, invalid saved data, and cache isolation. Tests use installed Google Chrome on macOS; on other platforms run `npx playwright install chromium` once first.
+- `npm test` builds and runs browser regression tests for work/break transitions, skipping a phase, timer restore across reloads, offline audio and history, audio failure recovery, invalid saved data, and cache isolation. Tests use installed Google Chrome on macOS; on other platforms run `npx playwright install chromium` once first.
 
 Edit `src/app.ts` for the timer and journal, `src/audio.ts` for the music, `src/pwa.ts` for installation, and `src/sw.ts` for offline caching. `src/dom.ts` provides runtime-checked, typed element lookup. Saved JSON is validated before use. Browser and worker types have separate compiler configurations.
 
@@ -29,10 +29,12 @@ JavaScript in `dist/` is generated for the browser; do not edit it. The HTML ent
 - Start: 25 minutes of focus with built-in, original synthesized lo-fi music.
 - Break: 5 minutes of silence, followed automatically by another focus session, indefinitely.
 - Pause freezes the timer and silences audio. Resume continues the session. Stop resets the timer and records any partial focus time.
+- Skip ends the current phase early: from focus it records the time you did sit through and moves straight to the break; from a break it starts the next focus session.
+- The session counter on the card advances with every finished focus phase, whether the clock ran it out or you skipped it.
 - Completed focus sessions and stopped partial sessions are saved in localStorage. The journal shows the latest 20; statistics include all saved sessions.
 - Volume controls this app's music. The app cannot mute other Mac applications.
 
-Keep this tab open and your Mac awake for uninterrupted music and timing. Browsers may suspend background audio or timers; when the page runs again it catches up using elapsed wall-clock time. Closing or reloading resets the active timer, but saved session history remains. Private browsing or clearing browser data can remove history. Use the same site address consistently to retain access to its local history.
+Keep this tab open and your Mac awake for uninterrupted music and timing. Browsers may suspend background audio or timers; when the page runs again it catches up using elapsed wall-clock time. Reloading does not reset the active timer: the running or paused clock is saved in localStorage and picked back up, including any phase boundary that passed while the page was away. Because browsers do not allow sound on a fresh page load, a restored session counts down silently until your first click or key press brings the music back. A clock left more than 30 minutes past its deadline is treated as a closed app rather than a reload, and a fresh session starts instead. Private browsing or clearing browser data can remove history. Use the same site address consistently to retain access to its local history.
 
 ## Install on mobile (PWA)
 
@@ -44,6 +46,6 @@ Run `npm run build`, then publish the contents of `dist/`, including `icons`, to
 
 For local desktop testing, run `npm start` in this directory and open `http://localhost:8080`. Localhost is allowed for development; visiting your Mac’s HTTP IP address from a phone is not equivalent.
 
-The PWA opens in a standalone window and supports display cutouts and home indicators. All app assets and icons are cached locally; fonts use the system fallback with no external requests. Installing does not grant native background execution: keep the app visible and the device awake for reliable timed music. Mobile operating systems may suspend background or locked-screen audio. History is per browser/app storage and origin; installing on iOS may use separate storage from the browser. The active timer still resets when the app reloads.
+The PWA opens in a standalone window and supports display cutouts and home indicators. All app assets and icons are cached locally; fonts use the system fallback with no external requests. Installing does not grant native background execution: keep the app visible and the device awake for reliable timed music. Mobile operating systems may suspend background or locked-screen audio. History and the saved timer are per browser/app storage and origin; installing on iOS may use separate storage from the browser.
 
 Each build automatically generates a service-worker cache version from the compiled app and static assets. A new worker caches the full release and waits until existing app windows close before activating, so updates do not reload an active timer.

@@ -8,6 +8,17 @@ interface FocusSession {
   end: number;
   seconds: number;
   complete: boolean;
+  /** Ended by Skip rather than by the clock or by Stop. */
+  skipped?: boolean;
+}
+/** Just enough of the clock to pick the same session back up after a reload. */
+interface TimerSnapshot {
+  phase: Phase;
+  state: "running" | "paused";
+  deadline: number;
+  remaining: number;
+  round: number;
+  startedAt: number | null;
 }
 
 function isFocusSession(value: unknown): value is FocusSession {
@@ -21,13 +32,35 @@ function isFocusSession(value: unknown): value is FocusSession {
     typeof session.seconds === "number" &&
     Number.isFinite(session.seconds) &&
     session.seconds >= 0 &&
-    typeof session.complete === "boolean"
+    typeof session.complete === "boolean" &&
+    (session.skipped === undefined || typeof session.skipped === "boolean")
+  );
+}
+
+function isTimerSnapshot(value: unknown): value is TimerSnapshot {
+  if (typeof value !== "object" || value === null) return false;
+  const snapshot = value as Record<string, unknown>;
+  return (
+    (snapshot.phase === "work" || snapshot.phase === "break") &&
+    (snapshot.state === "running" || snapshot.state === "paused") &&
+    typeof snapshot.deadline === "number" &&
+    Number.isFinite(snapshot.deadline) &&
+    typeof snapshot.remaining === "number" &&
+    Number.isFinite(snapshot.remaining) &&
+    snapshot.remaining >= 0 &&
+    typeof snapshot.round === "number" &&
+    Number.isInteger(snapshot.round) &&
+    snapshot.round >= 1 &&
+    (snapshot.startedAt === null ||
+      (typeof snapshot.startedAt === "number" &&
+        Number.isFinite(snapshot.startedAt)))
   );
 }
 
 const elements = {
   start: getElement("start", HTMLButtonElement),
   pause: getElement("pause", HTMLButtonElement),
+  skip: getElement("skip", HTMLButtonElement),
   stop: getElement("stop", HTMLButtonElement),
   clear: getElement("clear", HTMLButtonElement),
   volume: getElement("volume", HTMLInputElement),
@@ -45,13 +78,17 @@ const elements = {
   "total-count": getElement("total-count", HTMLElement),
   "history-list": getElement("history-list", HTMLElement),
   "start-label": getElement("start-label", HTMLElement),
+  "skip-label": getElement("skip-label", HTMLElement),
 };
 const $ = <K extends keyof typeof elements>(id: K): (typeof elements)[K] =>
   elements[id];
 const WORK = 25 * 60,
   BREAK = 5 * 60,
   KEY = "still.sessions.v1",
-  TRACK_KEY = "still.track.v1";
+  TRACK_KEY = "still.track.v1",
+  TIMER_KEY = "still.timer.v1";
+/** Beyond this far past a saved deadline the app was closed, not reloaded. */
+const RESUME_GRACE = 30 * 60 * 1000;
 let phase: Phase = "work";
 let state: TimerState = "idle";
 let remaining = WORK,
@@ -77,8 +114,11 @@ let voice: { node: AudioBufferSourceNode; fade: GainNode } | null = null;
 /** Rendering a loop is not free, so keep each one for as long as the context lives. */
 const buffers = new Map<string, AudioBuffer>();
 let audioFailed = false;
+/** A restored run counts down straight away, but sound needs a real gesture. */
+let needsGesture = false;
 const AUDIO_ERROR_MESSAGE =
   "Audio could not start. The timer still works. Pause and resume to try again.";
+const duration = (): number => (phase === "work" ? WORK : BREAK);
 function reportAudioFailure(): void {
   audioFailed = true;
   $("storage-message").textContent = AUDIO_ERROR_MESSAGE;
@@ -89,6 +129,33 @@ function silence() {
     voice.node.disconnect();
     voice.fade.disconnect();
     voice = null;
+  }
+}
+function ensureAudio(): void {
+  try {
+    if (!context || context.state === "closed") {
+      const AudioContextClass =
+        window.AudioContext ||
+        (window as Window & { webkitAudioContext?: typeof AudioContext })
+          .webkitAudioContext;
+      if (!AudioContextClass) throw new Error("Web Audio is unavailable.");
+      context = new AudioContextClass();
+      gain = undefined;
+      buffers.clear();
+    }
+    if (!gain) {
+      const newGain = context.createGain();
+      newGain.gain.value = Number($("volume").value) / 100;
+      newGain.connect(context.destination);
+      gain = newGain;
+    }
+    void context.resume().catch(() => {
+      silence();
+      reportAudioFailure();
+      render();
+    });
+  } catch {
+    reportAudioFailure();
   }
 }
 function playMusic() {
@@ -150,12 +217,90 @@ function selectTrack(id: string): void {
   $("announcement").textContent = `Music set to ${chosen.name}.`;
   render();
 }
-function record(end: number, complete: boolean, seconds = WORK): void {
+function saveTimer(): void {
+  try {
+    if (state === "idle") {
+      localStorage.removeItem(TIMER_KEY);
+      return;
+    }
+    const snapshot: TimerSnapshot = {
+      phase,
+      state,
+      deadline,
+      remaining,
+      round,
+      startedAt,
+    };
+    localStorage.setItem(TIMER_KEY, JSON.stringify(snapshot));
+  } catch {
+    // A clock that cannot be remembered still runs for this visit.
+  }
+}
+function resetTimer(): void {
+  state = "idle";
+  phase = "work";
+  remaining = WORK;
+  deadline = 0;
+  round = 1;
+  startedAt = null;
+  silence();
+  saveTimer();
+}
+/** Restore the clock a previous visit left behind, so a reload costs nothing. */
+function restoreTimer(): void {
+  let stored: unknown = null;
+  try {
+    const raw = localStorage.getItem(TIMER_KEY);
+    if (raw) stored = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (!isTimerSnapshot(stored)) return;
+  phase = stored.phase;
+  round = stored.round;
+  startedAt = stored.startedAt;
+  if (stored.state === "paused") {
+    state = "paused";
+    remaining = Math.min(stored.remaining, duration());
+    $("announcement").textContent = "Picked up where you left off, on pause.";
+    return;
+  }
+  if (Date.now() - stored.deadline > RESUME_GRACE) {
+    // Away long enough that the clock would invent focus nobody sat through.
+    resetTimer();
+    return;
+  }
+  state = "running";
+  deadline = stored.deadline;
+  remaining = Math.max(0, (deadline - Date.now()) / 1000);
+  needsGesture = true;
+  window.addEventListener("pointerdown", resumeAudio);
+  window.addEventListener("keydown", resumeAudio);
+  $("announcement").textContent =
+    "Picked up where you left off. Interact once to bring the music back.";
+  tick();
+}
+function resumeAudio(): void {
+  window.removeEventListener("pointerdown", resumeAudio);
+  window.removeEventListener("keydown", resumeAudio);
+  if (!needsGesture) return;
+  needsGesture = false;
+  ensureAudio();
+  playMusic();
+  render();
+}
+function record(
+  end: number,
+  complete: boolean,
+  seconds = WORK,
+  skipped = false,
+): void {
   sessions.unshift({
     start: startedAt,
     end,
     seconds: Math.round(seconds),
     complete,
+    skipped,
   });
   try {
     localStorage.setItem(KEY, JSON.stringify(sessions));
@@ -168,6 +313,7 @@ function record(end: number, complete: boolean, seconds = WORK): void {
 function tick() {
   if (state === "running") {
     const now = Date.now();
+    let crossed = false;
     while (now >= deadline) {
       const boundary = deadline;
       if (phase === "work") {
@@ -179,7 +325,8 @@ function tick() {
         round++;
         startedAt = boundary;
       }
-      deadline = boundary + (phase === "work" ? WORK : BREAK) * 1000;
+      deadline = boundary + duration() * 1000;
+      crossed = true;
       $("announcement").textContent =
         phase === "work"
           ? "Focus time. Music is playing."
@@ -188,6 +335,8 @@ function tick() {
     remaining = Math.max(0, (deadline - now) / 1000);
     if (phase === "work") playMusic();
     else silence();
+    // The phase outlives this page, so a boundary has to reach storage.
+    if (crossed) saveTimer();
   }
   render();
 }
@@ -204,7 +353,7 @@ function render() {
       ? "Still — Pomodoro"
       : `${display} · ${phase === "work" ? "Focus" : "Break"} — Still`;
   $("mode").textContent = phase === "work" ? "● FOCUS TIME" : "● TAKE A BREATH";
-  $("cycle").textContent = `ROUND ${String(round).padStart(2, "0")}`;
+  $("cycle").textContent = `SESSION ${String(round).padStart(2, "0")}`;
   $("status").textContent =
     state === "paused"
       ? "On pause. Take your time."
@@ -214,11 +363,14 @@ function render() {
           ? "Just you and the next small thing."
           : "Make room for good work.";
   $("progress").style.strokeDashoffset = String(
-    860.8 * (1 - remaining / (phase === "work" ? WORK : BREAK)),
+    860.8 * (1 - remaining / duration()),
   );
   $("start").disabled = state === "running";
   $("start-label").textContent = state === "paused" ? "Resume" : "Start focus";
   $("pause").disabled = state !== "running";
+  $("skip").disabled = state === "idle";
+  $("skip-label").textContent =
+    phase === "work" ? "Skip session" : "Skip break";
   $("stop").disabled = state === "idle";
   const track = findTrack(trackId);
   $("sound-label").textContent =
@@ -227,7 +379,9 @@ function render() {
       : state === "running"
         ? audioFailed
           ? "♫   Audio unavailable · timer running"
-          : `♫   ${track.name} · playing`
+          : needsGesture
+            ? `♫   ${track.name} · tap anywhere to bring the music back`
+            : `♫   ${track.name} · playing`
         : `♫   ${track.name} · ${track.mood}`;
   document.body.classList.toggle("break", phase === "break");
 }
@@ -237,35 +391,12 @@ $("start").addEventListener("click", () => {
   if ($("storage-message").textContent === AUDIO_ERROR_MESSAGE) {
     $("storage-message").textContent = "";
   }
-  try {
-    if (!context || context.state === "closed") {
-      const AudioContextClass =
-        window.AudioContext ||
-        (window as Window & { webkitAudioContext?: typeof AudioContext })
-          .webkitAudioContext;
-      if (!AudioContextClass) throw new Error("Web Audio is unavailable.");
-      context = new AudioContextClass();
-      gain = undefined;
-      buffers.clear();
-    }
-    if (!gain) {
-      const newGain = context.createGain();
-      newGain.gain.value = Number($("volume").value) / 100;
-      newGain.connect(context.destination);
-      gain = newGain;
-    }
-    void context.resume().catch(() => {
-      silence();
-      reportAudioFailure();
-      render();
-    });
-  } catch {
-    reportAudioFailure();
-  }
-  if (state === "idle") startedAt = Date.now();
+  ensureAudio();
+  if (startedAt === null) startedAt = Date.now();
   state = "running";
   deadline = Date.now() + remaining * 1000;
   playMusic();
+  saveTimer();
   tick();
 });
 $("pause").addEventListener("click", () => {
@@ -273,6 +404,33 @@ $("pause").addEventListener("click", () => {
   tick();
   state = "paused";
   silence();
+  saveTimer();
+  render();
+});
+$("skip").addEventListener("click", () => {
+  if (state === "idle") return;
+  // Settle a boundary the clock may have just passed before moving on.
+  tick();
+  const now = Date.now();
+  if (phase === "work") {
+    const spent = WORK - remaining;
+    if (spent >= 1) record(now, false, spent, true);
+    phase = "break";
+    startedAt = null;
+    silence();
+  } else {
+    phase = "work";
+    round++;
+    startedAt = state === "running" ? now : null;
+  }
+  remaining = duration();
+  deadline = now + remaining * 1000;
+  if (state === "running") playMusic();
+  $("announcement").textContent =
+    phase === "work"
+      ? `Skipped the break. Session ${round} is ready.`
+      : "Session skipped. Break time.";
+  saveTimer();
   render();
 });
 $("stop").addEventListener("click", () => {
@@ -280,12 +438,7 @@ $("stop").addEventListener("click", () => {
   tick();
   if (phase === "work" && WORK - remaining >= 1)
     record(Date.now(), false, WORK - remaining);
-  state = "idle";
-  phase = "work";
-  remaining = WORK;
-  round = 1;
-  startedAt = null;
-  silence();
+  resetTimer();
   render();
 });
 $("track").replaceChildren(
@@ -347,7 +500,11 @@ function renderHistory() {
     const name = document.createElement("span"),
       date = document.createElement("small"),
       length = document.createElement("b");
-    name.textContent = s.complete ? "✓  Focus completed" : "◌  Focus stopped";
+    name.textContent = s.complete
+      ? "✓  Focus completed"
+      : s.skipped
+        ? "⏭  Focus skipped"
+        : "◌  Focus stopped";
     date.textContent = new Date(s.end).toLocaleString([], {
       month: "short",
       day: "numeric",
@@ -364,4 +521,5 @@ document.addEventListener("visibilitychange", tick);
 window.addEventListener("pageshow", tick);
 setInterval(tick, 250);
 renderHistory();
+restoreTimer();
 render();
