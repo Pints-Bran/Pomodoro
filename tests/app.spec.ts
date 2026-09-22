@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 declare global {
   interface Window {
@@ -160,13 +160,20 @@ test("worker upgrades preserve caches belonging to other app scopes", async ({
   expect(names.some((name) => name.endsWith("-old"))).toBe(false);
 });
 
+/** The loop named in the sound label: "♫   Shuffle · Dusk · playing". */
+async function playingTrack(page: Page): Promise<string> {
+  const label = (await page.locator("#sound-label").textContent()) ?? "";
+  const parts = label.split(" · ");
+  return parts[0]?.includes("Shuffle") ? (parts[1] ?? "") : (parts[0] ?? "");
+}
+
 test("lo-fi track choice switches live and is remembered", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");
-  await expect(page.locator("#track")).toHaveValue("still");
-  await expect(page.locator("#sound-label")).toContainText("Still");
-  expect(await page.locator("#track option").count()).toBeGreaterThan(1);
+  await expect(page.locator("#track")).toHaveValue("shuffle");
+  await expect(page.locator("#sound-label")).toContainText("Shuffle");
+  expect(await page.locator("#track option").count()).toBeGreaterThan(2);
 
   await page.locator("#start").click();
   await expect.poll(() => page.evaluate(() => window.activeSounds)).toBe(1);
@@ -186,7 +193,45 @@ test("lo-fi track choice switches live and is remembered", async ({ page }) => {
     localStorage.setItem("still.track.v1", "no-such-track"),
   );
   await page.reload();
-  await expect(page.locator("#track")).toHaveValue("still");
+  await expect(page.locator("#track")).toHaveValue("shuffle");
+  expect(errors).toEqual([]);
+});
+
+test("shuffle moves to another loop mid-session and on the next one", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await expect(page.locator("#track")).toHaveValue("shuffle");
+
+  await page.locator("#start").click();
+  await expect.poll(() => page.evaluate(() => window.activeSounds)).toBe(1);
+  const first = await playingTrack(page);
+  expect(first).not.toBe("");
+
+  await page.evaluate(() => {
+    window.timeOffset += 5 * 60 * 1000;
+  });
+  await expect.poll(() => playingTrack(page)).not.toBe(first);
+  // The old loop stops as the new one starts, so the room never goes quiet.
+  expect(await page.evaluate(() => window.activeSounds)).toBe(1);
+
+  const second = await playingTrack(page);
+  await page.locator("#skip").click();
+  await expect(page.locator("body")).toHaveClass("break");
+  await page.locator("#skip").click();
+  await expect.poll(() => playingTrack(page)).not.toBe(second);
+  await expect.poll(() => page.evaluate(() => window.activeSounds)).toBe(1);
+
+  // A named track stays put: shuffling is a choice, not something imposed.
+  await page.locator("#track").selectOption("rain");
+  const chosen = await playingTrack(page);
+  await page.evaluate(() => {
+    window.timeOffset += 6 * 60 * 1000;
+  });
+  await expect(page.locator("#timer")).toHaveText(/^1[89]:/);
+  expect(await playingTrack(page)).toBe(chosen);
   expect(errors).toEqual([]);
 });
 

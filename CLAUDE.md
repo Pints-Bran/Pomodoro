@@ -92,7 +92,7 @@ load** if an id or its type is missing. Adding UI therefore means editing
 | Key | Holds |
 | --- | --- |
 | `still.sessions.v1` | the focus journal, newest first |
-| `still.track.v1` | chosen music track id |
+| `still.track.v1` | chosen music track id, or `shuffle` |
 | `still.timer.v1` | the live clock, so a reload does not lose the session |
 
 Every read is validated by a type guard (`isFocusSession`, `isTimerSnapshot`)
@@ -121,10 +121,28 @@ melody, kick/snare/hat, a one-pole lowpass for warmth, `tanh` soft clip and
 vinyl hiss. Rendering is expensive, so buffers are memoized per `AudioContext`
 in `app.ts`'s `buffers` map.
 
+One pass of a progression is about thirteen seconds, which is short enough to
+grate over 25 minutes, so a loop is `PASSES` passes of it (40 s) with the bass
+placement, melody notes, key voicing and a drum-free bar varying pass to pass.
+That costs samples, so loops render at a fixed `RATE` of 32 kHz rather than a
+device rate that may be 96 kHz, and the oscillators read a sine table instead of
+calling `Math.sin` per sample; the browser resamples on playback. Together those
+keep a render near 130 ms — it happens on the main thread, on Start and on every
+shuffle change, so **keep it there**: a couple of seconds of blocking is what
+the earlier `Math.sin`-per-sample version cost at 96 kHz, and the timer tests
+time out long before a user would complain.
+
+The track menu's first entry is `SHUFFLE`, and it is the default: `app.ts`
+keeps `choice` (what the menu holds) apart from `trackId` (what is sounding).
+When shuffling, `shuffleMusic()` moves to another loop every `SHUFFLE_EVERY`,
+and `shuffleAt = 0` — set on reset and whenever a work phase begins — means
+"change as soon as work is running", so no two sessions open on the same loop.
+`pickTrack()` never returns the loop already playing.
+
 Playback is one `voice` = a looping `AudioBufferSourceNode` plus its **own**
-fade `GainNode` under the master gain, which is what lets `selectTrack()`
-crossfade instead of clicking mid-phrase. Music plays only during `work`;
-`silence()` runs on break, pause and stop.
+fade `GainNode` under the master gain, which is what lets `crossfadeTo()` swap
+loops without clicking mid-phrase, for both a menu change and a shuffle change.
+Music plays only during `work`; `silence()` runs on break, pause and stop.
 
 `audioFailed` is a latch: without it a broken audio device would retry
 `playMusic()` four times a second. It clears only on an explicit Start click,

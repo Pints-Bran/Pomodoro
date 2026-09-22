@@ -1,4 +1,14 @@
-import { DEFAULT_TRACK, findTrack, makeMusic, TRACKS } from "./audio.js";
+import {
+  DEFAULT_CHOICE,
+  DEFAULT_TRACK,
+  findChoice,
+  findTrack,
+  makeMusic,
+  pickTrack,
+  SHUFFLE,
+  TRACKS,
+  type TrackChoice,
+} from "./audio.js";
 import { getElement } from "./dom.js";
 
 type Phase = "work" | "break";
@@ -89,6 +99,8 @@ const WORK = 25 * 60,
   TIMER_KEY = "still.timer.v1";
 /** Beyond this far past a saved deadline the app was closed, not reloaded. */
 const RESUME_GRACE = 30 * 60 * 1000;
+/** How long a shuffled loop holds before the next one fades in, in seconds. */
+const SHUFFLE_EVERY = 5 * 60;
 let phase: Phase = "work";
 let state: TimerState = "idle";
 let remaining = WORK,
@@ -96,17 +108,22 @@ let remaining = WORK,
   round = 1;
 let startedAt: number | null = null;
 let sessions: FocusSession[] = [];
-let trackId = DEFAULT_TRACK.id;
+/** What the menu holds. `trackId` is what is actually sounding right now. */
+let choice: TrackChoice = DEFAULT_CHOICE;
+let trackId: string = DEFAULT_TRACK.id;
+/** When the shuffled loop is next due to change. 0 means "as soon as it runs". */
+let shuffleAt = 0;
 try {
   // Read the track first: a corrupt session list must not cost the preference.
   const storedTrack = localStorage.getItem(TRACK_KEY);
-  if (storedTrack) trackId = findTrack(storedTrack).id;
+  if (storedTrack) choice = findChoice(storedTrack);
   const saved: unknown = JSON.parse(localStorage.getItem(KEY) || "[]");
   if (Array.isArray(saved)) sessions = saved.filter(isFocusSession);
 } catch {
   $("storage-message").textContent =
     "Local history is unavailable in this browser. The timer still works.";
 }
+trackId = choice === SHUFFLE ? pickTrack().id : choice;
 let context: AudioContext | undefined;
 let gain: GainNode | undefined;
 /** The playing loop, with its own gain so tracks can be swapped without a click. */
@@ -192,16 +209,9 @@ function playMusic() {
     reportAudioFailure();
   }
 }
-function selectTrack(id: string): void {
-  const chosen = findTrack(id);
-  if (chosen.id === trackId) return;
-  trackId = chosen.id;
-  $("track").value = trackId;
-  try {
-    localStorage.setItem(TRACK_KEY, trackId);
-  } catch {
-    // A track that cannot be remembered still plays for this session.
-  }
+/** Put a different loop on air without a gap, whoever asked for the change. */
+function crossfadeTo(id: string): void {
+  trackId = id;
   if (voice && context) {
     // Fade the old loop out under the new one rather than cutting mid-phrase.
     const previous = voice;
@@ -214,8 +224,41 @@ function selectTrack(id: string): void {
     };
   }
   playMusic();
-  $("announcement").textContent = `Music set to ${chosen.name}.`;
+}
+function selectTrack(value: string): void {
+  const chosen = findChoice(value);
+  if (chosen === choice) return;
+  choice = chosen;
+  $("track").value = choice;
+  try {
+    localStorage.setItem(TRACK_KEY, choice);
+  } catch {
+    // A track that cannot be remembered still plays for this session.
+  }
+  const next = choice === SHUFFLE ? pickTrack(trackId) : findTrack(choice);
+  shuffleAt = Date.now() + SHUFFLE_EVERY * 1000;
+  crossfadeTo(next.id);
+  $("announcement").textContent =
+    choice === SHUFFLE
+      ? `Shuffling. Now playing ${next.name}.`
+      : `Music set to ${next.name}.`;
   render();
+}
+/** On shuffle, move to another loop so nothing plays long enough to nag. */
+function shuffleMusic(now: number): void {
+  if (
+    choice !== SHUFFLE ||
+    phase !== "work" ||
+    audioFailed ||
+    needsGesture ||
+    now < shuffleAt
+  )
+    return;
+  shuffleAt = now + SHUFFLE_EVERY * 1000;
+  const next = pickTrack(trackId);
+  if (next.id === trackId) return;
+  crossfadeTo(next.id);
+  $("announcement").textContent = `Now playing ${next.name}.`;
 }
 function saveTimer(): void {
   try {
@@ -243,6 +286,7 @@ function resetTimer(): void {
   deadline = 0;
   round = 1;
   startedAt = null;
+  shuffleAt = 0;
   silence();
   saveTimer();
 }
@@ -324,6 +368,8 @@ function tick() {
         phase = "work";
         round++;
         startedAt = boundary;
+        // Every session opens on a different loop when shuffling.
+        shuffleAt = 0;
       }
       deadline = boundary + duration() * 1000;
       crossed = true;
@@ -333,8 +379,10 @@ function tick() {
           : "Break time. Five minutes of silence.";
     }
     remaining = Math.max(0, (deadline - now) / 1000);
-    if (phase === "work") playMusic();
-    else silence();
+    if (phase === "work") {
+      shuffleMusic(now);
+      playMusic();
+    } else silence();
     // The phase outlives this page, so a boundary has to reach storage.
     if (crossed) saveTimer();
   }
@@ -373,6 +421,7 @@ function render() {
     phase === "work" ? "Skip session" : "Skip break";
   $("stop").disabled = state === "idle";
   const track = findTrack(trackId);
+  const name = choice === SHUFFLE ? `Shuffle · ${track.name}` : track.name;
   $("sound-label").textContent =
     phase === "break"
       ? "♫   Break time · music is silent"
@@ -380,9 +429,9 @@ function render() {
         ? audioFailed
           ? "♫   Audio unavailable · timer running"
           : needsGesture
-            ? `♫   ${track.name} · tap anywhere to bring the music back`
-            : `♫   ${track.name} · playing`
-        : `♫   ${track.name} · ${track.mood}`;
+            ? `♫   ${name} · tap anywhere to bring the music back`
+            : `♫   ${name} · playing`
+        : `♫   ${name} · ${choice === SHUFFLE ? "a new loop every few minutes" : track.mood}`;
   document.body.classList.toggle("break", phase === "break");
 }
 $("start").addEventListener("click", () => {
@@ -393,6 +442,7 @@ $("start").addEventListener("click", () => {
   }
   ensureAudio();
   if (startedAt === null) startedAt = Date.now();
+  if (shuffleAt === 0) shuffleAt = Date.now() + SHUFFLE_EVERY * 1000;
   state = "running";
   deadline = Date.now() + remaining * 1000;
   playMusic();
@@ -422,9 +472,11 @@ $("skip").addEventListener("click", () => {
     phase = "work";
     round++;
     startedAt = state === "running" ? now : null;
+    shuffleAt = 0;
   }
   remaining = duration();
   deadline = now + remaining * 1000;
+  shuffleMusic(now);
   if (state === "running") playMusic();
   $("announcement").textContent =
     phase === "work"
@@ -442,14 +494,18 @@ $("stop").addEventListener("click", () => {
   render();
 });
 $("track").replaceChildren(
-  ...TRACKS.map((choice) =>
+  Object.assign(document.createElement("option"), {
+    value: SHUFFLE,
+    textContent: "Shuffle",
+  }),
+  ...TRACKS.map((option) =>
     Object.assign(document.createElement("option"), {
-      value: choice.id,
-      textContent: choice.name,
+      value: option.id,
+      textContent: option.name,
     }),
   ),
 );
-$("track").value = trackId;
+$("track").value = choice;
 $("track").addEventListener("change", () => {
   selectTrack($("track").value);
 });
