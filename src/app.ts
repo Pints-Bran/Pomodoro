@@ -10,6 +10,7 @@ import {
   type TrackChoice,
 } from "./audio.js";
 import { getElement } from "./dom.js";
+import { askToNotify, notify } from "./notify.js";
 
 type Phase = "work" | "break";
 type TimerState = "idle" | "running" | "paused";
@@ -68,11 +69,15 @@ function isTimerSnapshot(value: unknown): value is TimerSnapshot {
 }
 
 const elements = {
+  app: getElement("app", HTMLElement),
   start: getElement("start", HTMLButtonElement),
   pause: getElement("pause", HTMLButtonElement),
   skip: getElement("skip", HTMLButtonElement),
   stop: getElement("stop", HTMLButtonElement),
   clear: getElement("clear", HTMLButtonElement),
+  "break-overlay": getElement("break-overlay", HTMLElement),
+  "break-skip": getElement("break-skip", HTMLButtonElement),
+  "break-stop": getElement("break-stop", HTMLButtonElement),
   volume: getElement("volume", HTMLInputElement),
   track: getElement("track", HTMLSelectElement),
   progress: getElement("progress", SVGCircleElement),
@@ -82,6 +87,8 @@ const elements = {
   mode: getElement("mode", HTMLElement),
   cycle: getElement("cycle", HTMLElement),
   status: getElement("status", HTMLElement),
+  "break-timer": getElement("break-timer", HTMLElement),
+  "break-status": getElement("break-status", HTMLElement),
   "sound-label": getElement("sound-label", HTMLElement),
   "today-count": getElement("today-count", HTMLElement),
   "today-minutes": getElement("today-minutes", HTMLElement),
@@ -101,6 +108,14 @@ const WORK = 25 * 60,
 const RESUME_GRACE = 30 * 60 * 1000;
 /** How long a shuffled loop holds before the next one fades in, in seconds. */
 const SHUFFLE_EVERY = 5 * 60;
+/**
+ * A hidden tab's interval is throttled to roughly a minute, so a live boundary
+ * lands well inside this. Older than that and the app slept through the break;
+ * announcing it then is noise, not a nudge.
+ */
+const NOTIFY_GRACE = 90 * 1000;
+const BREAK_OVER_TITLE = "Break's over";
+const BREAK_OVER_BODY = "Minimise this and start the next 25.";
 let phase: Phase = "work";
 let state: TimerState = "idle";
 let remaining = WORK,
@@ -133,6 +148,10 @@ const buffers = new Map<string, AudioBuffer>();
 let audioFailed = false;
 /** A restored run counts down straight away, but sound needs a real gesture. */
 let needsGesture = false;
+/** Boundaries found while restoring belong to a past visit, not to this moment. */
+let restoring = false;
+/** Edge-triggers the overlay's focus handoff; render() runs four times a second. */
+let overlayOpen = false;
 const AUDIO_ERROR_MESSAGE =
   "Audio could not start. The timer still works. Pause and resume to try again.";
 const duration = (): number => (phase === "work" ? WORK : BREAK);
@@ -322,7 +341,9 @@ function restoreTimer(): void {
   window.addEventListener("keydown", resumeAudio);
   $("announcement").textContent =
     "Picked up where you left off. Interact once to bring the music back.";
+  restoring = true;
   tick();
+  restoring = false;
 }
 function resumeAudio(): void {
   window.removeEventListener("pointerdown", resumeAudio);
@@ -358,6 +379,8 @@ function tick() {
   if (state === "running") {
     const now = Date.now();
     let crossed = false;
+    /** The last break→work boundary this pass settled, 0 for none. */
+    let breakEnded = 0;
     while (now >= deadline) {
       const boundary = deadline;
       if (phase === "work") {
@@ -370,6 +393,7 @@ function tick() {
         startedAt = boundary;
         // Every session opens on a different loop when shuffling.
         shuffleAt = 0;
+        breakEnded = boundary;
       }
       deadline = boundary + duration() * 1000;
       crossed = true;
@@ -385,6 +409,15 @@ function tick() {
     } else silence();
     // The phase outlives this page, so a boundary has to reach storage.
     if (crossed) saveTimer();
+    // At most one per pass, however many boundaries the loop just settled, and
+    // never for one it only found because the page reloaded on top of it.
+    if (
+      breakEnded &&
+      !restoring &&
+      document.hidden &&
+      now - breakEnded < NOTIFY_GRACE
+    )
+      notify(BREAK_OVER_TITLE, BREAK_OVER_BODY);
   }
   render();
 }
@@ -402,7 +435,7 @@ function render() {
       : `${display} · ${phase === "work" ? "Focus" : "Break"} — Still`;
   $("mode").textContent = phase === "work" ? "● FOCUS TIME" : "● TAKE A BREATH";
   $("cycle").textContent = `SESSION ${String(round).padStart(2, "0")}`;
-  $("status").textContent =
+  const statusText =
     state === "paused"
       ? "On pause. Take your time."
       : phase === "break"
@@ -410,6 +443,7 @@ function render() {
         : state === "running"
           ? "Just you and the next small thing."
           : "Make room for good work.";
+  $("status").textContent = statusText;
   $("progress").style.strokeDashoffset = String(
     860.8 * (1 - remaining / duration()),
   );
@@ -432,6 +466,23 @@ function render() {
             ? `♫   ${name} · tap anywhere to bring the music back`
             : `♫   ${name} · playing`
         : `♫   ${name} · ${choice === SHUFFLE ? "a new loop every few minutes" : track.mood}`;
+  // The same string both clocks show: the overlay cannot drift from #timer.
+  $("break-timer").textContent = display;
+  $("break-status").textContent = statusText;
+  const onBreak = phase === "break" && state !== "idle";
+  if (onBreak !== overlayOpen) {
+    overlayOpen = onBreak;
+    $("break-overlay").hidden = !onBreak;
+    // A rest view that covers the page should leave the tab order too, and
+    // nothing behind it is worth a scrollbar.
+    $("app").inert = onBreak;
+    document.body.style.overflow = onBreak ? "hidden" : "";
+    if (onBreak) $("break-overlay").focus({ preventScroll: true });
+    else {
+      const back = $("start").disabled ? $("skip") : $("start");
+      if (!back.disabled) back.focus({ preventScroll: true });
+    }
+  }
   document.body.classList.toggle("break", phase === "break");
 }
 $("start").addEventListener("click", () => {
@@ -441,6 +492,7 @@ $("start").addEventListener("click", () => {
     $("storage-message").textContent = "";
   }
   ensureAudio();
+  askToNotify();
   if (startedAt === null) startedAt = Date.now();
   if (shuffleAt === 0) shuffleAt = Date.now() + SHUFFLE_EVERY * 1000;
   state = "running";
@@ -457,7 +509,8 @@ $("pause").addEventListener("click", () => {
   saveTimer();
   render();
 });
-$("skip").addEventListener("click", () => {
+// Named, because the overlay's own buttons drive the same two actions.
+function skipPhase(): void {
   if (state === "idle") return;
   // Settle a boundary the clock may have just passed before moving on.
   tick();
@@ -484,15 +537,19 @@ $("skip").addEventListener("click", () => {
       : "Session skipped. Break time.";
   saveTimer();
   render();
-});
-$("stop").addEventListener("click", () => {
+}
+function stopTimer(): void {
   if (state === "idle") return;
   tick();
   if (phase === "work" && WORK - remaining >= 1)
     record(Date.now(), false, WORK - remaining);
   resetTimer();
   render();
-});
+}
+$("skip").addEventListener("click", skipPhase);
+$("break-skip").addEventListener("click", skipPhase);
+$("stop").addEventListener("click", stopTimer);
+$("break-stop").addEventListener("click", stopTimer);
 $("track").replaceChildren(
   Object.assign(document.createElement("option"), {
     value: SHUFFLE,

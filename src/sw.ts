@@ -10,6 +10,7 @@ const ASSETS = [
   "./app.js",
   "./audio.js",
   "./dom.js",
+  "./notify.js",
   "./pwa.js",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
@@ -56,6 +57,25 @@ worker.addEventListener("fetch", (event) => {
         }
         throw error;
       }
+    })(),
+  );
+});
+worker.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    (async () => {
+      const windows = await worker.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+      for (const client of windows) {
+        // Other apps can share this origin; only reach for one of ours.
+        if (client.url.startsWith(worker.registration.scope)) {
+          await client.focus();
+          return;
+        }
+      }
+      await worker.clients.openWindow(worker.registration.scope);
     })(),
   );
 });

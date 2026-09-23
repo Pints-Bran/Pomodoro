@@ -85,7 +85,20 @@ this model rather than subtracting from `remaining`.
 call it. Element lookup goes through the `elements` map and the `$()` accessor,
 backed by `src/dom.ts`'s runtime-checked `getElement`, which **throws at module
 load** if an id or its type is missing. Adding UI therefore means editing
-`index.html` and the `elements` map together.
+`index.html` and the `elements` map together — except ids that exist purely as
+ARIA targets (`break-heading`), which stay out of the map.
+
+`render()` also drives the break rest view, `#break-overlay`, derived from
+`phase === "break" && state !== "idle"` — never toggled from a handler, so the
+two places phase can change (the `tick()` loop and Skip) both get it for free,
+and pausing a break keeps it up with a frozen clock. Its countdown is written
+from the same `display` string as `#timer`, so the two cannot drift. Only the
+non-idempotent part of the transition — `hidden`, `inert` on `#app`, body
+overflow, moving focus — is edge-triggered through `overlayOpen`. `#app` going
+`inert` is why `#announcement` sits outside `<main>`: a live region inside an
+inert subtree stops announcing. `#break-skip` and `#break-stop` share the named
+`skipPhase`/`stopTimer` functions with the main controls rather than
+synthesising a click on a button that is at that moment behind `inert`.
 
 ### localStorage
 
@@ -148,6 +161,34 @@ Music plays only during `work`; `silence()` runs on break, pause and stop.
 `playMusic()` four times a second. It clears only on an explicit Start click,
 and a test asserts exactly one attempt per failure.
 
+### `src/notify.ts` — the break-over notification
+
+Permission is asked once from the Start click (`askToNotify()`, beside
+`ensureAudio()`) and **never at module load** — browsers punish that, and Start
+is the gesture already in hand. `notify()` re-reads `Notification.permission`
+every call so a mid-session revoke is honoured, prefers
+`registration.showNotification()` because Android Chrome refuses the
+`new Notification()` constructor outright, and swallows every failure: a refused
+notification must not take the timer down with it. The registration handle is
+warmed from `navigator.serviceWorker.ready` at load, since a session restored
+mid-break can reach the boundary with nobody ever clicking Start; `pwa.ts` still
+owns `register()`.
+
+Three gates decide whether the break→work boundary says anything, and each earns
+its place. `document.hidden` — a visible page already has the overlay lifting
+off it, and the `visibilitychange → tick()` path sees `hidden === false` by the
+time it runs, so returning to the tab settles a boundary silently. `restoring` —
+a boundary found while `restoreTimer()` catches up belongs to a past visit.
+`NOTIFY_GRACE` (90 s) — a hidden tab's interval is throttled to roughly a
+minute, so a live boundary lands well inside it, while "your break ended eleven
+minutes ago" is noise. Exactly-once falls out of `tick()` holding the last
+break→work crossing in a **local** `breakEnded`, so however many boundaries one
+catch-up pass settles, at most one notification goes out; the `tag` on the
+notification is the second line of defence.
+
+`sw.ts`'s `notificationclick` focuses the first window within this worker's
+scope (same isolation stance as the caches) and opens one if none is left.
+
 ### `src/sw.ts` + `src/pwa.ts` — offline and install
 
 Cache names are namespaced `still-pwa-${encodeURIComponent(registration.scope)}-<hash>`
@@ -166,7 +207,7 @@ All URLs are relative (`./`) so the app works from a GitHub Pages subdirectory.
 assertions assume it, including a no-horizontal-scroll check). `webServer`
 serves `dist/` on port 4173 with `reuseExistingServer: false`.
 
-Two fixtures in `beforeEach` via `addInitScript` do all the heavy lifting:
+Four fixtures in `beforeEach` via `addInitScript` do all the heavy lifting:
 
 - **Fake clock.** `Date.now` is offset by `window.timeOffset`, which is a
   property backed by `sessionStorage` precisely so the offset survives
@@ -175,6 +216,21 @@ Two fixtures in `beforeEach` via `addInitScript` do all the heavy lifting:
 - **Audio spy.** `AudioContext.prototype.createBufferSource` is patched to count
   `activeSounds` (started minus stopped) and `audioAttempts`, and to throw when
   `failAudio` is set.
+- **Visibility.** Playwright cannot hide a page, so `document.hidden` and
+  `document.visibilityState` are shadowed by configurable accessors reading
+  `window.pageHidden`.
+- **Notification spy.** Both `ServiceWorkerRegistration.prototype.showNotification`
+  and the `Notification` constructor are stubbed — the second so the spy never
+  races worker activation — recording into `window.notifications`.
+  `permissionRequests` counts asks and `notificationPermission` lets a test
+  refuse. No real `grantPermissions`: the stub owns that dimension.
+
+Two traps. Several tests assert `body`'s **exact** className
+(`toHaveClass("break")`), so never add a second class to `<body>` — put UI state
+on the element it belongs to. And nothing inside `<main>` is clickable during a
+break, because the overlay covers it and `#app` is `inert`, so a test acting
+then must target `#break-skip`/`#break-stop`. The overlay is deliberately
+un-animated: Playwright waits for a stable bounding box before clicking.
 
 Timer text assertions use regexes (`/^1[45]:/`) or a captured previous value —
 real time passes between action and assertion, so exact strings are flaky.

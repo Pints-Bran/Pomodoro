@@ -17,7 +17,7 @@
 </head>
 
 <body>
-    <main>
+    <main id="app">
         <header><a class="brand" href="./index.html"><span class="brand-icon">◒</span> still<span class="brand-note">A
                     LITTLE SPACE TO FOCUS</span></a><span class="local">● Saved on this device</span></header>
         <section class="workspace">
@@ -67,8 +67,18 @@
             <p id="storage-message" role="status"></p>
         </section>
         <footer>Less noise. More presence.<span>Built for your everyday flow.</span></footer>
-        <div id="announcement" class="sr-only" aria-live="polite"></div>
     </main>
+    <div id="announcement" class="sr-only" aria-live="polite"></div>
+    <div id="break-overlay" class="break-overlay" role="dialog" aria-modal="true"
+        aria-labelledby="break-heading" tabindex="-1" hidden>
+        <span class="eyebrow">TAKE A BREATH</span>
+        <h2 id="break-heading">Rest your eyes.</h2>
+        <span id="break-timer">05:00</span>
+        <p id="break-status">Step away. Enjoy the quiet.</p>
+        <p class="break-note">The next session starts on its own. Nothing here needs you.</p>
+        <div class="break-actions"><button type="button" id="break-skip">⏭ Skip break</button><button type="button"
+                id="break-stop" class="text-button">■ Stop</button></div>
+    </div>
     <script type="module" src="app.js"></script>
     <script type="module" src="pwa.js"></script>
 </body>

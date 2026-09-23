@@ -6,6 +6,10 @@ declare global {
     activeSounds: number;
     failAudio: boolean;
     audioAttempts: number;
+    pageHidden: boolean;
+    notifications: { title: string; body: string }[];
+    permissionRequests: number;
+    notificationPermission: NotificationPermission;
   }
 }
 
@@ -39,6 +43,45 @@ test.beforeEach(async ({ page }) => {
       };
       return node;
     };
+    // Playwright cannot hide a page, so visibility is faked the way the clock is.
+    window.pageHidden = false;
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      get: () => window.pageHidden,
+    });
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => (window.pageHidden ? "hidden" : "visible"),
+    });
+    // Stubbed rather than granted for real, so a test owns the permission too.
+    window.notifications = [];
+    window.permissionRequests = 0;
+    window.notificationPermission = "default";
+    const requestPermission = () => {
+      window.permissionRequests++;
+      if (window.notificationPermission === "default")
+        window.notificationPermission = "granted";
+      return Promise.resolve(window.notificationPermission);
+    };
+    const record = (title: string, options?: NotificationOptions) => {
+      window.notifications.push({ title, body: options?.body ?? "" });
+    };
+    ServiceWorkerRegistration.prototype.showNotification = (title, options) => {
+      record(title, options);
+      return Promise.resolve();
+    };
+    // Cover the pre-worker fallback too, so the spy never races activation.
+    class SpyNotification extends EventTarget {
+      static requestPermission = requestPermission;
+      static get permission() {
+        return window.notificationPermission;
+      }
+      constructor(title: string, options?: NotificationOptions) {
+        super();
+        record(title, options);
+      }
+    }
+    window.Notification = SpyNotification as unknown as typeof Notification;
   });
 });
 
@@ -220,7 +263,8 @@ test("shuffle moves to another loop mid-session and on the next one", async ({
   const second = await playingTrack(page);
   await page.locator("#skip").click();
   await expect(page.locator("body")).toHaveClass("break");
-  await page.locator("#skip").click();
+  // The rest view covers the page, so its own button is the way out of a break.
+  await page.locator("#break-skip").click();
   await expect.poll(() => playingTrack(page)).not.toBe(second);
   await expect.poll(() => page.evaluate(() => window.activeSounds)).toBe(1);
 
@@ -259,7 +303,7 @@ test("skip ends the phase early and still counts the session", async ({
   await expect(page.locator("#total-count")).toHaveText("0");
   await expect(page.locator("#today-minutes")).toHaveText("1 min");
 
-  await page.locator("#skip").click();
+  await page.locator("#break-skip").click();
   await expect(page.locator("#cycle")).toHaveText("SESSION 02");
   await expect(page.locator("#timer")).toHaveText(/^2[45]:/);
   await expect(page.locator("body")).not.toHaveClass("break");
@@ -360,5 +404,186 @@ test("a malformed timer snapshot is ignored", async ({ page }) => {
   await page.reload();
   await expect(page.locator("#timer")).toHaveText("25:00");
   await expect(page.locator("#cycle")).toHaveText("SESSION 01");
+  expect(errors).toEqual([]);
+});
+
+test("the break overlay covers the page for the whole break", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await expect(page.locator("#break-overlay")).toBeHidden();
+  await page.locator("#start").click();
+  await page.evaluate(() => {
+    window.timeOffset += 25 * 60 * 1000;
+  });
+  await expect(page.locator("#break-overlay")).toBeVisible();
+  // Nothing else may join it: several tests read body's className exactly.
+  await expect(page.locator("body")).toHaveClass("break");
+  // Read both clocks in one pass: separate reads can straddle a tick.
+  const clocks = await page.evaluate(() => ({
+    main: document.getElementById("timer")?.textContent,
+    overlay: document.getElementById("break-timer")?.textContent,
+    centre: document
+      .getElementById("break-overlay")
+      ?.contains(
+        document.elementFromPoint(innerWidth / 2, innerHeight / 2) as Node,
+      ),
+    inert: document.getElementById("app")?.hasAttribute("inert"),
+  }));
+  expect(clocks.overlay).toBe(clocks.main);
+  expect(clocks.centre).toBe(true);
+  expect(clocks.inert).toBe(true);
+
+  await page.locator("#break-skip").click();
+  await expect(page.locator("#break-overlay")).toBeHidden();
+  await expect(page.locator("#cycle")).toHaveText("SESSION 02");
+  await expect.poll(() => page.evaluate(() => window.activeSounds)).toBe(1);
+  expect(
+    await page.evaluate(() =>
+      document.getElementById("app")?.hasAttribute("inert"),
+    ),
+  ).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test("the overlay holds through a pause and its stop ends the sitting", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.locator("#start").click();
+  await page.evaluate(() => {
+    window.timeOffset += 25 * 60 * 1000;
+  });
+  await expect(page.locator("#break-overlay")).toBeVisible();
+  const held = await page.locator("#break-timer").textContent();
+
+  // Pausing a break is still being on a break, so the rest view stays put.
+  await page.evaluate(() => document.getElementById("pause")?.click());
+  await page.evaluate(() => {
+    window.timeOffset += 60000;
+  });
+  await page.waitForTimeout(350);
+  await expect(page.locator("#break-overlay")).toBeVisible();
+  await expect(page.locator("#break-timer")).toHaveText(held ?? "");
+  await expect(page.locator("#break-status")).toHaveText(
+    "On pause. Take your time.",
+  );
+
+  await page.locator("#break-stop").click();
+  await expect(page.locator("#break-overlay")).toBeHidden();
+  await expect(page.locator("#timer")).toHaveText("25:00");
+  await expect(page.locator("#stop")).toBeDisabled();
+  expect(
+    await page.evaluate(() => localStorage.getItem("still.timer.v1")),
+  ).toBe(null);
+});
+
+test("a break restored from storage comes back with the overlay up", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.locator("#start").click();
+  await page.evaluate(() => {
+    window.timeOffset += 25 * 60 * 1000;
+  });
+  await expect(page.locator("#break-overlay")).toBeVisible();
+
+  await page.reload();
+  await expect(page.locator("#break-overlay")).toBeVisible();
+  await expect(page.locator("#break-timer")).toHaveText(/^0[45]:/);
+  // A boundary found while restoring belongs to a past visit, not to this one.
+  expect(await page.evaluate(() => window.notifications.length)).toBe(0);
+});
+
+test("a break that ends in a hidden tab sends one notification", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+  await page.locator("#start").click();
+  expect(await page.evaluate(() => window.permissionRequests)).toBe(1);
+
+  await page.evaluate(() => {
+    window.pageHidden = true;
+    window.timeOffset += 25 * 60 * 1000;
+  });
+  await expect(page.locator("#break-overlay")).toBeVisible();
+  // Starting a break is not news; the rest view is already waiting.
+  expect(await page.evaluate(() => window.notifications.length)).toBe(0);
+
+  await page.evaluate(() => {
+    window.timeOffset += 5 * 60 * 1000;
+  });
+  await expect
+    .poll(() => page.evaluate(() => window.notifications.length))
+    .toBe(1);
+  expect(await page.evaluate(() => window.notifications[0])).toEqual({
+    title: "Break's over",
+    body: "Minimise this and start the next 25.",
+  });
+
+  await page.evaluate(() => {
+    window.timeOffset += 30000;
+  });
+  await page.waitForTimeout(400);
+  expect(await page.evaluate(() => window.notifications.length)).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test("a visible page gets the overlay back, not a notification", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.locator("#start").click();
+  await page.evaluate(() => {
+    window.timeOffset += 30 * 60 * 1000;
+  });
+  await expect(page.locator("#cycle")).toHaveText("SESSION 02");
+  await expect(page.locator("#break-overlay")).toBeHidden();
+  expect(await page.evaluate(() => window.notifications.length)).toBe(0);
+});
+
+test("boundaries crossed while the app slept stay quiet", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#start").click();
+  // One jump over both boundaries: the break ended five minutes ago.
+  await page.evaluate(() => {
+    window.pageHidden = true;
+    window.timeOffset += 35 * 60 * 1000;
+  });
+  await expect(page.locator("#cycle")).toHaveText("SESSION 02");
+  await page.waitForTimeout(400);
+  expect(await page.evaluate(() => window.notifications.length)).toBe(0);
+});
+
+test("permission is asked once, from the start button", async ({ page }) => {
+  await page.goto("/");
+  // Asking at load is what browsers punish, so nothing may happen before a click.
+  expect(await page.evaluate(() => window.permissionRequests)).toBe(0);
+  await page.locator("#start").click();
+  expect(await page.evaluate(() => window.permissionRequests)).toBe(1);
+  await page.locator("#pause").click();
+  await page.locator("#start").click();
+  expect(await page.evaluate(() => window.permissionRequests)).toBe(1);
+});
+
+test("a refused permission leaves the timer alone", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await page.evaluate(() => {
+    window.notificationPermission = "denied";
+  });
+  await page.locator("#start").click();
+  await page.evaluate(() => {
+    window.pageHidden = true;
+    window.timeOffset += 30 * 60 * 1000;
+  });
+  await expect(page.locator("#cycle")).toHaveText("SESSION 02");
+  expect(await page.evaluate(() => window.notifications.length)).toBe(0);
   expect(errors).toEqual([]);
 });

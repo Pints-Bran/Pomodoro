@@ -436,6 +436,9 @@ input[type="range"] {
   .primary {
     min-width: 120px;
   }
+  #break-timer {
+    font-size: 64px;
+  }
 }
 
 @supports (min-height: 100dvh) {
@@ -444,6 +447,62 @@ input[type="range"] {
   }
 }
 .install-card[hidden],
+.break-overlay[hidden],
 button[hidden] {
   display: none;
+}
+.break-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  text-align: center;
+  overscroll-behavior: contain;
+  /* The body's own wash, so this reads as the app dimming, not a card landing. */
+  background:
+    radial-gradient(ellipse at 50% 34%, #24413a 0, transparent 68%), var(--bg);
+  padding: max(28px, env(safe-area-inset-top))
+    max(24px, env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom))
+    max(24px, env(safe-area-inset-left));
+}
+/* Only a focus target, not a control, so it should not draw a ring. */
+.break-overlay:focus {
+  outline: none;
+}
+#break-heading {
+  font:
+    500 30px "Manrope",
+    system-ui,
+    sans-serif;
+  letter-spacing: -1.4px;
+  margin: 0;
+}
+#break-timer {
+  font:
+    500 72px "Manrope",
+    system-ui,
+    sans-serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -3px;
+  color: var(--accent);
+}
+#break-status {
+  margin: 0;
+  max-width: 30ch;
+  font-size: 12px;
+}
+.break-note {
+  margin: 0;
+  max-width: 32ch;
+  font-size: 11px;
+}
+.break-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
 }

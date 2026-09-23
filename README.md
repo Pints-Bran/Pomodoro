@@ -18,7 +18,7 @@ Open `http://localhost:8080`. After editing source files, restart the command to
 - `npm run format` formats supported source and configuration files with Biome.
 - `npm run lint` runs Biome alone; `npm run lint:fix` applies its safe fixes.
 - `npm run check` checks TypeScript types plus Biome lint, import ordering, and formatting (warnings fail the check).
-- `npm test` builds and runs browser regression tests for work/break transitions, skipping a phase, timer restore across reloads, offline audio and history, audio failure recovery, invalid saved data, and cache isolation. Tests use installed Google Chrome on macOS; on other platforms run `npx playwright install chromium` once first.
+- `npm test` builds and runs browser regression tests for work/break transitions, skipping a phase, timer restore across reloads, offline audio and history, audio failure recovery, invalid saved data, the break rest view, break-over notifications, and cache isolation. Tests use installed Google Chrome on macOS; on other platforms run `npx playwright install chromium` once first.
 
 Edit `src/app.ts` for the timer and journal, `src/audio.ts` for the music, `src/pwa.ts` for installation, and `src/sw.ts` for offline caching. `src/dom.ts` provides runtime-checked, typed element lookup. Saved JSON is validated before use. Browser and worker types have separate compiler configurations.
 
@@ -31,6 +31,7 @@ JavaScript in `dist/` is generated for the browser; do not edit it. The HTML ent
 - Pause freezes the timer and silences audio. Resume continues the session. Stop resets the timer and records any partial focus time.
 - Skip ends the current phase early: from focus it records the time you did sit through and moves straight to the break; from a break it starts the next focus session.
 - The session counter on the card advances with every finished focus phase, whether the clock ran it out or you skipped it.
+- When the break starts, a full-screen rest view takes over the page and counts it down; when the break ends with Still in the background, a system notification asks you to minimise it and start the next 25.
 - Completed focus sessions and stopped partial sessions are saved in localStorage. The journal shows the latest 20; statistics include all saved sessions.
 - Volume controls this app's music. The app cannot mute other Mac applications.
 

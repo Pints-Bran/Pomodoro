@@ -26,6 +26,7 @@ const assets: string[] = [
   "app.js",
   "audio.js",
   "dom.js",
+  "notify.js",
   "pwa.js",
   "sw.js",
   "icons/icon-192.png",
