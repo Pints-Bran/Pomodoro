@@ -7,6 +7,7 @@ declare global {
     failAudio: boolean;
     audioAttempts: number;
     pageHidden: boolean;
+    pageFocused: boolean;
     notifications: { title: string; body: string }[];
     permissionRequests: number;
     notificationPermission: NotificationPermission;
@@ -53,6 +54,10 @@ test.beforeEach(async ({ page }) => {
       configurable: true,
       get: () => (window.pageHidden ? "hidden" : "visible"),
     });
+    // Nor put another app in front of it: a hidden page is never focused, but
+    // a visible one can be left unfocused behind something else.
+    window.pageFocused = true;
+    document.hasFocus = () => window.pageFocused && !window.pageHidden;
     // Stubbed rather than granted for real, so a test owns the permission too.
     window.notifications = [];
     window.permissionRequests = 0;
@@ -497,7 +502,7 @@ test("a break restored from storage comes back with the overlay up", async ({
   expect(await page.evaluate(() => window.notifications.length)).toBe(0);
 });
 
-test("a break that ends in a hidden tab sends one notification", async ({
+test("each boundary in a hidden tab sends one notification", async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -512,16 +517,22 @@ test("a break that ends in a hidden tab sends one notification", async ({
     window.timeOffset += 25 * 60 * 1000;
   });
   await expect(page.locator("#break-overlay")).toBeVisible();
-  // Starting a break is not news; the rest view is already waiting.
-  expect(await page.evaluate(() => window.notifications.length)).toBe(0);
+  // The rest view opened in a tab nobody is looking at, so say so.
+  await expect
+    .poll(() => page.evaluate(() => window.notifications.length))
+    .toBe(1);
+  expect(await page.evaluate(() => window.notifications[0])).toEqual({
+    title: "Break time",
+    body: "Five minutes. Step away from the screen.",
+  });
 
   await page.evaluate(() => {
     window.timeOffset += 5 * 60 * 1000;
   });
   await expect
     .poll(() => page.evaluate(() => window.notifications.length))
-    .toBe(1);
-  expect(await page.evaluate(() => window.notifications[0])).toEqual({
+    .toBe(2);
+  expect(await page.evaluate(() => window.notifications[1])).toEqual({
     title: "Break's over",
     body: "Minimise this and start the next 25.",
   });
@@ -530,8 +541,28 @@ test("a break that ends in a hidden tab sends one notification", async ({
     window.timeOffset += 30000;
   });
   await page.waitForTimeout(400);
-  expect(await page.evaluate(() => window.notifications.length)).toBe(1);
+  expect(await page.evaluate(() => window.notifications.length)).toBe(2);
   expect(errors).toEqual([]);
+});
+
+test("a break that starts behind another app still notifies", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+  await page.locator("#start").click();
+  // Visible, but another window has focus: not hidden, and not watched either.
+  await page.evaluate(() => {
+    window.pageFocused = false;
+    window.timeOffset += 25 * 60 * 1000;
+  });
+  await expect(page.locator("#break-overlay")).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => window.notifications.length))
+    .toBe(1);
+  expect(await page.evaluate(() => window.notifications[0]?.title)).toBe(
+    "Break time",
+  );
 });
 
 test("a visible page gets the overlay back, not a notification", async ({

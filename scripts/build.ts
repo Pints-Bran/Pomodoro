@@ -25,6 +25,7 @@ const assets: string[] = [
   "manifest.webmanifest",
   "app.js",
   "audio.js",
+  "desktop.js",
   "dom.js",
   "notify.js",
   "pwa.js",

@@ -18,7 +18,7 @@ Open `http://localhost:8080`. After editing source files, restart the command to
 - `npm run format` formats supported source and configuration files with Biome.
 - `npm run lint` runs Biome alone; `npm run lint:fix` applies its safe fixes.
 - `npm run check` checks TypeScript types plus Biome lint, import ordering, and formatting (warnings fail the check).
-- `npm test` builds and runs browser regression tests for work/break transitions, skipping a phase, timer restore across reloads, offline audio and history, audio failure recovery, invalid saved data, the break rest view, break-over notifications, and cache isolation. Tests use installed Google Chrome on macOS; on other platforms run `npx playwright install chromium` once first.
+- `npm test` builds and runs browser regression tests for work/break transitions, skipping a phase, timer restore across reloads, offline audio and history, audio failure recovery, invalid saved data, the break rest view, phase notifications, and cache isolation. `npm run test:desktop` runs the macOS desktop app's window tests locally (not in CI). Tests use installed Google Chrome on macOS; on other platforms run `npx playwright install chromium` once first.
 
 Edit `src/app.ts` for the timer and journal, `src/audio.ts` for the music, `src/pwa.ts` for installation, and `src/sw.ts` for offline caching. `src/dom.ts` provides runtime-checked, typed element lookup. Saved JSON is validated before use. Browser and worker types have separate compiler configurations.
 
@@ -31,11 +31,29 @@ JavaScript in `dist/` is generated for the browser; do not edit it. The HTML ent
 - Pause freezes the timer and silences audio. Resume continues the session. Stop resets the timer and records any partial focus time.
 - Skip ends the current phase early: from focus it records the time you did sit through and moves straight to the break; from a break it starts the next focus session.
 - The session counter on the card advances with every finished focus phase, whether the clock ran it out or you skipped it.
-- When the break starts, a full-screen rest view takes over the page and counts it down; when the break ends with Still in the background, a system notification asks you to minimise it and start the next 25.
+- When the break starts, a full-screen rest view takes over the page and counts it down. If you're not looking at Still, because the tab is hidden or another app has focus, a system notification tells you the break has started, and another tells you when it ends.
 - Completed focus sessions and stopped partial sessions are saved in localStorage. The journal shows the latest 20; statistics include all saved sessions.
 - Volume controls this app's music. The app cannot mute other Mac applications.
 
 Keep this tab open and your Mac awake for uninterrupted music and timing. Browsers may suspend background audio or timers; when the page runs again it catches up using elapsed wall-clock time. Reloading does not reset the active timer: the running or paused clock is saved in localStorage and picked back up, including any phase boundary that passed while the page was away. Because browsers do not allow sound on a fresh page load, a restored session counts down silently until your first click or key press brings the music back. A clock left more than 30 minutes past its deadline is treated as a closed app rather than a reload, and a fresh session starts instead. Private browsing or clearing browser data can remove history. Use the same site address consistently to retain access to its local history.
+
+## Desktop app (macOS)
+
+A browser can notify you, but it can't bring its own window to the front. The desktop app can. It runs the same build inside Electron:
+
+- **Break starts:** Still jumps in front of whatever you're doing, fills the screen, and stays on top for the five minutes, with a notification and a Dock bounce.
+- **Break ends:** Still goes back to its old size, minimizes itself, and tells you the break is over. The music coming back is your cue.
+- **Menu bar:** the countdown is always visible, as `12:34 · Focus` or `03:10 · Break`.
+- **Closing the window** keeps the timer running. Quit from the menu bar or with Cmd+Q.
+- **Open at Login** is on by default. You can switch it off in the menu bar menu.
+
+```sh
+npm ci
+npm run desktop    # try it without packaging
+npm run package    # build release/mac/Still.app (release/mac-arm64 on Apple silicon)
+```
+
+Move `Still.app` to /Applications **before** opening it for the first time, because that first launch registers the login item. macOS asks once whether Still may send notifications. The build is ad-hoc signed, not notarized, which is fine for a Mac you built it on. The desktop app keeps its own history, separate from the browser version's, because they are different origins.
 
 ## Install on mobile (PWA)
 

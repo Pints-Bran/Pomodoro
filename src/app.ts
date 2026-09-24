@@ -9,6 +9,7 @@ import {
   TRACKS,
   type TrackChoice,
 } from "./audio.js";
+import { reportStatus } from "./desktop.js";
 import { getElement } from "./dom.js";
 import { askToNotify, notify } from "./notify.js";
 
@@ -114,6 +115,8 @@ const SHUFFLE_EVERY = 5 * 60;
  * announcing it then is noise, not a nudge.
  */
 const NOTIFY_GRACE = 90 * 1000;
+const BREAK_TITLE = "Break time";
+const BREAK_BODY = "Five minutes. Step away from the screen.";
 const BREAK_OVER_TITLE = "Break's over";
 const BREAK_OVER_BODY = "Minimise this and start the next 25.";
 let phase: Phase = "work";
@@ -378,9 +381,8 @@ function record(
 function tick() {
   if (state === "running") {
     const now = Date.now();
-    let crossed = false;
-    /** The last break→work boundary this pass settled, 0 for none. */
-    let breakEnded = 0;
+    /** The last boundary this pass settled, 0 for none; `phase` is what it began. */
+    let crossedAt = 0;
     while (now >= deadline) {
       const boundary = deadline;
       if (phase === "work") {
@@ -393,10 +395,9 @@ function tick() {
         startedAt = boundary;
         // Every session opens on a different loop when shuffling.
         shuffleAt = 0;
-        breakEnded = boundary;
       }
       deadline = boundary + duration() * 1000;
-      crossed = true;
+      crossedAt = boundary;
       $("announcement").textContent =
         phase === "work"
           ? "Focus time. Music is playing."
@@ -408,16 +409,20 @@ function tick() {
       playMusic();
     } else silence();
     // The phase outlives this page, so a boundary has to reach storage.
-    if (crossed) saveTimer();
+    if (crossedAt) saveTimer();
     // At most one per pass, however many boundaries the loop just settled, and
-    // never for one it only found because the page reloaded on top of it.
+    // never for one it only found because the page reloaded on top of it. A
+    // window left behind another app is not hidden, only unfocused, so both
+    // count as nobody watching.
     if (
-      breakEnded &&
+      crossedAt &&
       !restoring &&
-      document.hidden &&
-      now - breakEnded < NOTIFY_GRACE
-    )
-      notify(BREAK_OVER_TITLE, BREAK_OVER_BODY);
+      (document.hidden || !document.hasFocus()) &&
+      now - crossedAt < NOTIFY_GRACE
+    ) {
+      if (phase === "break") notify(BREAK_TITLE, BREAK_BODY);
+      else notify(BREAK_OVER_TITLE, BREAK_OVER_BODY);
+    }
   }
   render();
 }
@@ -484,6 +489,9 @@ function render() {
     }
   }
   document.body.classList.toggle("break", phase === "break");
+  // The desktop shell derives its window from the same state as the overlay,
+  // and its menu bar clock from the same string as #timer.
+  reportStatus({ phase, state, clock: display });
 }
 $("start").addEventListener("click", () => {
   if (state === "running") return;

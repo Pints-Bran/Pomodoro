@@ -1,16 +1,23 @@
 {
   "name": "still-pomodoro",
+  "productName": "Still",
+  "description": "A calm Pomodoro timer with synthesized lo-fi music.",
   "version": "1.0.0",
   "private": true,
   "engines": {
     "node": ">=22.18.0"
   },
+  "main": "dist-desktop/main.js",
   "scripts": {
-    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.tools.json",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.tools.json && tsc -p tsconfig.desktop.json --noEmit",
     "build": "npm run typecheck && node scripts/build.ts",
+    "build:desktop": "npm run build && tsc -p tsconfig.desktop.json",
     "format": "biome format --write .",
     "start": "npm run build && python3 -m http.server 8080 --directory dist",
+    "desktop": "npm run build:desktop && env -u ELECTRON_RUN_AS_NODE electron .",
+    "package": "npm run build:desktop && electron-builder --mac",
     "test": "npm run build && playwright test",
+    "test:desktop": "npm run build:desktop && playwright test -c playwright.desktop.config.ts",
     "check": "npm run typecheck && npm run lint",
     "lint": "biome check . --error-on-warnings",
     "lint:fix": "biome check --write ."
@@ -19,7 +26,26 @@
     "@biomejs/biome": "^2.5.14",
     "@playwright/test": "^1.63.0",
     "@types/node": "^26.6.2",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
     "typescript": "^7.0.2"
+  },
+  "build": {
+    "appId": "app.still.pomodoro",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-desktop/**"
+    ],
+    "mac": {
+      "target": "dir",
+      "icon": "icons/icon-512.png",
+      "category": "public.app-category.productivity",
+      "identity": "-",
+      "hardenedRuntime": false
+    }
   },
   "type": "module"
 }

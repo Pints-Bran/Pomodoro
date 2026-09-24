@@ -5,6 +5,8 @@
       "**",
       "!!node_modules",
       "!!dist",
+      "!!dist-desktop",
+      "!!release",
       "!!test-results",
       "!!playwright-report",
       "!!package-lock.json"

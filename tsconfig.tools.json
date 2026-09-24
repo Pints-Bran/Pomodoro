@@ -9,5 +9,10 @@
     "noEmit": true,
     "erasableSyntaxOnly": true
   },
-  "include": ["scripts/**/*.ts", "tests/**/*.ts", "playwright.config.ts"]
+  "include": [
+    "scripts/**/*.ts",
+    "tests/**/*.ts",
+    "playwright.config.ts",
+    "playwright.desktop.config.ts"
+  ]
 }

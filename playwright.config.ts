@@ -9,6 +9,8 @@ if (process.env.NO_COLOR !== undefined) {
 
 export default defineConfig({
   testDir: "./tests",
+  // The desktop suite launches Electron and has its own config.
+  testIgnore: "desktop/**",
   fullyParallel: true,
   use: {
     baseURL: "http://127.0.0.1:4173",

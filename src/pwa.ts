@@ -1,3 +1,4 @@
+import { inDesktop } from "./desktop.js";
 import { getElement } from "./dom.js";
 
 interface InstallPromptEvent extends Event {
@@ -23,6 +24,12 @@ function isInstallPromptEvent(event: Event): event is InstallPromptEvent {
   const ios =
     /iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  // The desktop app is already installed and already local. A cache-first
+  // worker there would only serve the previous release after an update.
+  if (inDesktop) {
+    card.hidden = true;
+    return;
+  }
   let installPrompt: InstallPromptEvent | null = null;
   function updateInstallUI() {
     card.hidden = isInstalled();

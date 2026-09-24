@@ -27,8 +27,9 @@ export function notify(title: string, body: string): void {
     body,
     icon: "./icons/icon-192.png",
     badge: "./icons/icon-192.png",
-    // Replace rather than stack if one is somehow already on screen.
-    tag: "still-break-over",
+    // One tag for both boundaries: "Break's over" replaces a "Break time" still
+    // on screen rather than stacking under it.
+    tag: "still-phase",
   };
   try {
     if (registration) {
