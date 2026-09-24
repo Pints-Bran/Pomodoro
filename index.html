@@ -23,7 +23,7 @@
         <section class="workspace">
             <div class="intro"><span class="eyebrow">ONE THING AT A TIME</span>
                 <h1>Find your rhythm.</h1>
-                <p>25 minutes of focus. 5 minutes to breathe. Repeat.</p>
+                <p>25 minutes of focus. 5 minutes to breathe. A longer rest after every fourth.</p>
             </div>
             <div class="timer-card">
                 <div class="mode-row"><span id="mode" class="mode">● FOCUS TIME</span><span id="cycle">SESSION 01</span>
@@ -44,6 +44,10 @@
                         for="track">Track <select id="track"></select></label><label
                         for="volume">Volume <input id="volume" type="range" min="0" max="100" value="40"></label></div>
             </div>
+            <figure class="quote">
+                <blockquote id="quote-text"></blockquote>
+                <figcaption id="quote-author"></figcaption>
+            </figure>
             <p class="loop-note">↻ &nbsp; Work and rest repeat automatically. Music rests when you do.</p>
         </section>
         <aside id="install-card" class="install-card" hidden>
@@ -71,10 +75,14 @@
     <div id="announcement" class="sr-only" aria-live="polite"></div>
     <div id="break-overlay" class="break-overlay" role="dialog" aria-modal="true"
         aria-labelledby="break-heading" tabindex="-1" hidden>
-        <span class="eyebrow">TAKE A BREATH</span>
+        <span id="break-kind" class="eyebrow">TAKE A BREATH</span>
         <h2 id="break-heading">Rest your eyes.</h2>
         <span id="break-timer">05:00</span>
         <p id="break-status">Step away. Enjoy the quiet.</p>
+        <figure class="quote">
+            <blockquote id="break-quote-text"></blockquote>
+            <figcaption id="break-quote-author"></figcaption>
+        </figure>
         <p class="break-note">The next session starts on its own. Nothing here needs you.</p>
         <div class="break-actions"><button type="button" id="break-skip">⏭ Skip break</button><button type="button"
                 id="break-stop" class="text-button">■ Stop</button></div>

@@ -5,7 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project
 
 "Still" — a zero-dependency TypeScript Pomodoro PWA. 25 minutes of focus with
-synthesized lo-fi music, 5 silent minutes, repeating indefinitely, plus a
+synthesized lo-fi music, 5 silent minutes (30 after every fourth session),
+repeating indefinitely, plus sourced quotes that change with each phase and a
 localStorage focus journal. No runtime dependencies, no bundler, no framework,
 no audio files, no network calls, no fonts fetched from a CDN. An optional
 Electron shell in `desktop/` runs the same `dist/` as a macOS app, for the one
@@ -97,6 +98,15 @@ passed, so a throttled background tab or a reload catches up in one pass and
 still records the sessions it owes. Any code that changes phase must go through
 this model rather than subtracting from `remaining`.
 
+The long break lives entirely in `duration()`. `longBreak()` is
+`phase === "break" && round % LONG_EVERY === 0`: during a break, `round` is
+still the session that just ended, because `round++` only happens at
+break→work. Every place that sets a clock already asks `duration()`: the
+`tick()` deadline, Skip's `remaining`, the restore clamp and the progress ring.
+So catch-up, Skip and reload need no long-break code of their own, and the
+snapshot shape did not change. Skipped sessions count toward the four, because
+they advance `round`. Stop resets it.
+
 `render()` is the single place that writes to the DOM; handlers mutate state and
 call it. Element lookup goes through the `elements` map and the `$()` accessor,
 backed by `src/dom.ts`'s runtime-checked `getElement`, which **throws at module
@@ -115,6 +125,12 @@ overflow, moving focus — is edge-triggered through `overlayOpen`. `#app` going
 inert subtree stops announcing. `#break-skip` and `#break-stop` share the named
 `skipPhase`/`stopTimer` functions with the main controls rather than
 synthesising a click on a button that is at that moment behind `inert`.
+
+Quotes are edge-triggered in `render()` too, on `quoteKey = phase:round`. The
+clock, Skip, Stop, restore and first load all get a fresh one without calling
+anything. A work key writes `#quote-*` on the card, and a break key writes
+`#break-quote-*` on the overlay. `lastQuote` per phase is handed to
+`pickQuote()`, so the same quote never shows twice running.
 
 The last thing `render()` does is `reportStatus({ phase, state, clock })` from
 `src/desktop.ts`, a no-op outside the desktop shell. It deduplicates, so the
@@ -181,6 +197,13 @@ Music plays only during `work`; `silence()` runs on break, pause and stop.
 `playMusic()` four times a second. It clears only on an explicit Start click,
 and a test asserts exactly one attempt per failure.
 
+### `src/quotes.ts` — focus and rest quotes
+
+`FOCUS_QUOTES` and `REST_QUOTES` hold only quotes with a traceable source,
+named in a comment above each entry, because most circulating "motivation
+quotes" are misattributed. Add to the lists; never paraphrase an entry, and
+never add one you cannot source.
+
 ### `src/notify.ts` — the phase notifications
 
 Permission is asked once from the Start click (`askToNotify()`, beside
@@ -194,8 +217,8 @@ warmed from `navigator.serviceWorker.ready` at load, since a session restored
 mid-break can reach the boundary with nobody ever clicking Start; `pwa.ts` still
 owns `register()`.
 
-Both boundaries notify: "Break time" when work ends, "Break's over" when the
-break does. The first used to stay quiet on the theory that the rest view was
+Both boundaries notify: "Break time" (or "Long break") when work ends, and
+"Break's over" when the break does. The first used to stay quiet on the theory that the rest view was
 already waiting, but it opens inside a window nobody is looking at, and that is
 the whole problem. Three gates decide whether a boundary says anything, and
 each earns its place. Nobody watching, `document.hidden || !document.hasFocus()`:

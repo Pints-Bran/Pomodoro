@@ -618,3 +618,103 @@ test("a refused permission leaves the timer alone", async ({ page }) => {
   expect(await page.evaluate(() => window.notifications.length)).toBe(0);
   expect(errors).toEqual([]);
 });
+
+test("every fourth break is a long one", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#start").click();
+  // Three full cycles, one jump each: 25 of focus and 5 of rest.
+  for (const session of ["02", "03", "04"]) {
+    await page.evaluate(() => {
+      window.timeOffset += 30 * 60 * 1000;
+    });
+    await expect(page.locator("#cycle")).toHaveText(`SESSION ${session}`);
+  }
+  await page.evaluate(() => {
+    window.timeOffset += 25 * 60 * 1000;
+  });
+  await expect(page.locator("#break-overlay")).toBeVisible();
+  await expect(page.locator("#break-kind")).toHaveText("A LONGER REST");
+  await expect(page.locator("#break-timer")).toHaveText(/^(30:00|29:)/);
+
+  // Where a short break would already be over, this one has 25 minutes left.
+  await page.evaluate(() => {
+    window.timeOffset += 5 * 60 * 1000;
+  });
+  await expect(page.locator("#break-timer")).toHaveText(/^2[45]:/);
+  await expect(page.locator("#cycle")).toHaveText("SESSION 04");
+
+  await page.reload();
+  await expect(page.locator("#break-overlay")).toBeVisible();
+  await expect(page.locator("#break-timer")).toHaveText(/^2[45]:/);
+
+  await page.evaluate(() => {
+    window.timeOffset += 25 * 60 * 1000;
+  });
+  await expect(page.locator("#cycle")).toHaveText("SESSION 05");
+  await expect(page.locator("#break-overlay")).toBeHidden();
+  await expect(page.locator("#total-count")).toHaveText("4");
+});
+
+async function skipToSessionFour(page: Page): Promise<void> {
+  for (const session of ["02", "03", "04"]) {
+    await page.locator("#skip").click();
+    await page.locator("#break-skip").click();
+    await expect(page.locator("#cycle")).toHaveText(`SESSION ${session}`);
+  }
+}
+
+test("skipped sessions count toward the long break", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#start").click();
+  await skipToSessionFour(page);
+  await page.locator("#skip").click();
+  await expect(page.locator("#break-overlay")).toBeVisible();
+  await expect(page.locator("#break-kind")).toHaveText("A LONGER REST");
+  await expect(page.locator("#break-timer")).toHaveText(/^(30:00|29:5)/);
+});
+
+test("stop starts the count over", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#start").click();
+  await skipToSessionFour(page);
+  await page.locator("#stop").click();
+  await expect(page.locator("#cycle")).toHaveText("SESSION 01");
+
+  await page.locator("#start").click();
+  await page.locator("#skip").click();
+  await expect(page.locator("#break-overlay")).toBeVisible();
+  await expect(page.locator("#break-kind")).toHaveText("TAKE A BREATH");
+  await expect(page.locator("#break-timer")).toHaveText(/^(05:00|04:5)/);
+});
+
+test("a new quote with every phase", async ({ page }) => {
+  await page.goto("/");
+  const quote = (id: string) => page.locator(`#${id}`).textContent();
+  const firstFocus = await quote("quote-text");
+  expect(firstFocus).toBeTruthy();
+  expect(await quote("quote-author")).toBeTruthy();
+
+  await page.locator("#start").click();
+  await page.evaluate(() => {
+    window.timeOffset += 25 * 60 * 1000;
+  });
+  await expect(page.locator("#break-overlay")).toBeVisible();
+  const firstRest = await quote("break-quote-text");
+  expect(firstRest).toBeTruthy();
+  expect(await quote("break-quote-author")).toBeTruthy();
+
+  await page.evaluate(() => {
+    window.timeOffset += 5 * 60 * 1000;
+  });
+  await expect(page.locator("#cycle")).toHaveText("SESSION 02");
+  // Never the same one twice running, so a new session always reads new words.
+  await expect(page.locator("#quote-text")).not.toHaveText(firstFocus ?? "");
+
+  await page.evaluate(() => {
+    window.timeOffset += 25 * 60 * 1000;
+  });
+  await expect(page.locator("#break-overlay")).toBeVisible();
+  await expect(page.locator("#break-quote-text")).not.toHaveText(
+    firstRest ?? "",
+  );
+});

@@ -12,6 +12,7 @@ import {
 import { reportStatus } from "./desktop.js";
 import { getElement } from "./dom.js";
 import { askToNotify, notify } from "./notify.js";
+import { FOCUS_QUOTES, pickQuote, type Quote, REST_QUOTES } from "./quotes.js";
 
 type Phase = "work" | "break";
 type TimerState = "idle" | "running" | "paused";
@@ -77,6 +78,7 @@ const elements = {
   stop: getElement("stop", HTMLButtonElement),
   clear: getElement("clear", HTMLButtonElement),
   "break-overlay": getElement("break-overlay", HTMLElement),
+  "break-kind": getElement("break-kind", HTMLElement),
   "break-skip": getElement("break-skip", HTMLButtonElement),
   "break-stop": getElement("break-stop", HTMLButtonElement),
   volume: getElement("volume", HTMLInputElement),
@@ -90,6 +92,10 @@ const elements = {
   status: getElement("status", HTMLElement),
   "break-timer": getElement("break-timer", HTMLElement),
   "break-status": getElement("break-status", HTMLElement),
+  "quote-text": getElement("quote-text", HTMLElement),
+  "quote-author": getElement("quote-author", HTMLElement),
+  "break-quote-text": getElement("break-quote-text", HTMLElement),
+  "break-quote-author": getElement("break-quote-author", HTMLElement),
   "sound-label": getElement("sound-label", HTMLElement),
   "today-count": getElement("today-count", HTMLElement),
   "today-minutes": getElement("today-minutes", HTMLElement),
@@ -102,6 +108,9 @@ const $ = <K extends keyof typeof elements>(id: K): (typeof elements)[K] =>
   elements[id];
 const WORK = 25 * 60,
   BREAK = 5 * 60,
+  LONG_BREAK = 30 * 60,
+  /** Every this-many focus sessions, the break after is a long one. */
+  LONG_EVERY = 4,
   KEY = "still.sessions.v1",
   TRACK_KEY = "still.track.v1",
   TIMER_KEY = "still.timer.v1";
@@ -117,6 +126,8 @@ const SHUFFLE_EVERY = 5 * 60;
 const NOTIFY_GRACE = 90 * 1000;
 const BREAK_TITLE = "Break time";
 const BREAK_BODY = "Five minutes. Step away from the screen.";
+const LONG_BREAK_TITLE = "Long break";
+const LONG_BREAK_BODY = "Thirty minutes. Stand up, stretch, get some air.";
 const BREAK_OVER_TITLE = "Break's over";
 const BREAK_OVER_BODY = "Minimise this and start the next 25.";
 let phase: Phase = "work";
@@ -155,9 +166,20 @@ let needsGesture = false;
 let restoring = false;
 /** Edge-triggers the overlay's focus handoff; render() runs four times a second. */
 let overlayOpen = false;
+/** The phase and session the quotes on screen belong to; a new one earns new quotes. */
+let quoteKey = "";
+/** Never the same quote twice running, kept per phase. */
+const lastQuote: Record<Phase, Quote | undefined> = {
+  work: undefined,
+  break: undefined,
+};
 const AUDIO_ERROR_MESSAGE =
   "Audio could not start. The timer still works. Pause and resume to try again.";
-const duration = (): number => (phase === "work" ? WORK : BREAK);
+// During a break `round` is still the session that just ended: it only moves
+// on when the next one begins.
+const longBreak = (): boolean => phase === "break" && round % LONG_EVERY === 0;
+const duration = (): number =>
+  phase === "work" ? WORK : longBreak() ? LONG_BREAK : BREAK;
 function reportAudioFailure(): void {
   audioFailed = true;
   $("storage-message").textContent = AUDIO_ERROR_MESSAGE;
@@ -401,7 +423,9 @@ function tick() {
       $("announcement").textContent =
         phase === "work"
           ? "Focus time. Music is playing."
-          : "Break time. Five minutes of silence.";
+          : longBreak()
+            ? "Long break. Thirty minutes of silence."
+            : "Break time. Five minutes of silence.";
     }
     remaining = Math.max(0, (deadline - now) / 1000);
     if (phase === "work") {
@@ -420,8 +444,9 @@ function tick() {
       (document.hidden || !document.hasFocus()) &&
       now - crossedAt < NOTIFY_GRACE
     ) {
-      if (phase === "break") notify(BREAK_TITLE, BREAK_BODY);
-      else notify(BREAK_OVER_TITLE, BREAK_OVER_BODY);
+      if (phase === "work") notify(BREAK_OVER_TITLE, BREAK_OVER_BODY);
+      else if (longBreak()) notify(LONG_BREAK_TITLE, LONG_BREAK_BODY);
+      else notify(BREAK_TITLE, BREAK_BODY);
     }
   }
   render();
@@ -438,13 +463,21 @@ function render() {
     state === "idle"
       ? "Still — Pomodoro"
       : `${display} · ${phase === "work" ? "Focus" : "Break"} — Still`;
-  $("mode").textContent = phase === "work" ? "● FOCUS TIME" : "● TAKE A BREATH";
+  const long = longBreak();
+  $("mode").textContent =
+    phase === "work"
+      ? "● FOCUS TIME"
+      : long
+        ? "● LONG BREAK"
+        : "● TAKE A BREATH";
   $("cycle").textContent = `SESSION ${String(round).padStart(2, "0")}`;
   const statusText =
     state === "paused"
       ? "On pause. Take your time."
       : phase === "break"
-        ? "Step away. Enjoy the quiet."
+        ? long
+          ? "A longer rest. Stretch, walk, drink some water."
+          : "Step away. Enjoy the quiet."
         : state === "running"
           ? "Just you and the next small thing."
           : "Make room for good work.";
@@ -474,6 +507,25 @@ function render() {
   // The same string both clocks show: the overlay cannot drift from #timer.
   $("break-timer").textContent = display;
   $("break-status").textContent = statusText;
+  $("break-kind").textContent = long ? "A LONGER REST" : "TAKE A BREATH";
+  // Derived here, not picked by whoever changed the phase, so the clock, Skip,
+  // Stop and a restore all get fresh quotes without asking for them.
+  const key = `${phase}:${round}`;
+  if (key !== quoteKey) {
+    quoteKey = key;
+    const quote = pickQuote(
+      phase === "work" ? FOCUS_QUOTES : REST_QUOTES,
+      lastQuote[phase],
+    );
+    lastQuote[phase] = quote;
+    // The card keeps its focus quote while the overlay covers it.
+    const [text, author] =
+      phase === "work"
+        ? (["quote-text", "quote-author"] as const)
+        : (["break-quote-text", "break-quote-author"] as const);
+    $(text).textContent = quote.text;
+    $(author).textContent = quote.author;
+  }
   const onBreak = phase === "break" && state !== "idle";
   if (onBreak !== overlayOpen) {
     overlayOpen = onBreak;
@@ -542,7 +594,9 @@ function skipPhase(): void {
   $("announcement").textContent =
     phase === "work"
       ? `Skipped the break. Session ${round} is ready.`
-      : "Session skipped. Break time.";
+      : longBreak()
+        ? "Session skipped. Long break."
+        : "Session skipped. Break time.";
   saveTimer();
   render();
 }

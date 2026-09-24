@@ -27,7 +27,8 @@ JavaScript in `dist/` is generated for the browser; do not edit it. The HTML ent
 ## Features
 
 - Start: 25 minutes of focus with built-in, original synthesized lo-fi music.
-- Break: 5 minutes of silence, followed automatically by another focus session, indefinitely.
+- Break: 5 minutes of silence, followed automatically by another focus session, indefinitely. After every fourth focus session the break is 30 minutes instead. Skipped sessions count toward the four, and Stop starts the count over.
+- Quotes: a short quote under the timer while you focus and another on the break screen, with a new one every session and every break. They are all real, sourced quotes from writers and thinkers, built in (no network).
 - Pause freezes the timer and silences audio. Resume continues the session. Stop resets the timer and records any partial focus time.
 - Skip ends the current phase early: from focus it records the time you did sit through and moves straight to the break; from a break it starts the next focus session.
 - The session counter on the card advances with every finished focus phase, whether the clock ran it out or you skipped it.

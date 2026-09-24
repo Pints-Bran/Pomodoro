@@ -13,6 +13,7 @@ const ASSETS = [
   "./dom.js",
   "./notify.js",
   "./pwa.js",
+  "./quotes.js",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
